@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 from socket import socket, AF_INET, SOCK_DGRAM
 import struct
 
-debug=1         # 1 is only graphs, 2 is graphs and jpg
+debug=0         # 1 is only graphs, 2 is graphs and jpg
 
 cx=int(3280/2)  # center of sensor IMX219 todo: get from camera modes
 cy=int(2464/2)
@@ -109,7 +109,7 @@ roi[0] = GetROI()    # quick start ROIs
 
 # iterative process
 t0 = time.perf_counter()   # time zero
-for n in range(0, 6*300):
+for n in range(0, 6*40):
   tm[ipc]  = time.perf_counter() - t0    # image time stamp
   roi[ipc] = GetROI()                    # snap a new ROI (as current index)
   # compute correlation of previous and current RIOs
@@ -137,9 +137,9 @@ for n in range(0, 6*300):
     corr=signal.correlate(np.array(roi[ipl]).astype(int), np.array(roi[ipc]).astype(int), mode='same',method='fft')
     # compute centroid of correlation result to determine shift between current and oldest image
     x[ipl], y[ipl] = Centroid(corr,cxs,cys)
-    dtl = tm[ipc] - tm[ipl]
-    dxl = x[ipl] - x0
-    dyl = y[ipl] - y0
+    dtl = (tm[ipc] - tm[ipl]) / (ipn-1)
+    dxl = (x[ipl] - x0) / (ipn-1)
+    dyl = (y[ipl] - y0) / (ipn-1)
 
     if (debug and (avg == 10)):
       pathx.append(xi)
@@ -152,7 +152,6 @@ for n in range(0, 6*300):
   # slow down process
   if (debug < 2):
     time.sleep(.1)
-# roi[ipp] = np.copy(roi[ipn])
 
   # Handle server/client traffic
   if (SrvSocketActive):
@@ -184,9 +183,9 @@ for n in range(0, 6*300):
     buf = buf[:len(buf)] + struct.pack('<I',ChkSum)
     Socket.sendto(buf,(SERVER_IP,PORT_NUMBER))
 
-  # advance pipeline image indexes
-  ipp = ipc
-  ipc = ipc + 1
+  # advance pipeline image indexes for next iteration
+  ipp = ipc       # previous pipeline index
+  ipc = ipc + 1   # current  pipeline index
   if (ipc >= ipn): ipc = 0
   ipl = ipc + 1   # oldest pipeline index
   if (ipl >= ipn): ipl = 0
@@ -195,6 +194,10 @@ for n in range(0, 6*300):
 
 # numpy debug graphs
 if (debug):
+  print(x)
+  print(y)
+  print(tm)
+
   plt.subplots_adjust(hspace=.5)
 
   plt.subplot(3,2,1)
@@ -203,7 +206,7 @@ if (debug):
 
   plt.subplot(3,2,2)
   plt.title("current ROI")
-  plt.imshow(roi[ipl], cmap='gray')
+  plt.imshow(roi[ipc], cmap='gray')
 
   plt.subplot(3,2,3)
   plt.title("correlation")
