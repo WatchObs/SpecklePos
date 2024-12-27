@@ -4,8 +4,12 @@
 # RPi HQ camera
 # {'format': SRGGB12_CSI2P, 'unpacked': 'SRGGB12', 'bit_depth': 12, 'size': (4056, 3040),
 #'fps': 10.0, 'crop_limits': (0, 0, 4056, 3040), 'exposure_limits': (114, 694422939, None)}
+#
+# single frame ROI
 # rpicam-still -t 20000 --shutter 500 --analoggain 2 --roi .25,.25,.1,.1
+# video of ROI
 # rpicam-vid -t 20000 --shutter 2000 --awbgains 1,0 False --denoise off --sat 0 --analoggain 2 --roi .5,.5,.0625,.0625 --o speckle.h264 --width 204 --height 154
+
 import sys
 import io
 import time
@@ -25,7 +29,7 @@ cx=int(3280/2)  # center of sensor IMX219 todo: get from camera modes
 cy=int(2464/2)
 cxs=128         # ROI pixel size
 cys=cxs
-exp=20*1000     # microseconds, todo: adjust exposure from initial image flux
+exp=25*1000     # microseconds, todo: adjust exposure from initial image flux
 
 count = 0
 xi  = 0         # Integrated center shifts
@@ -90,7 +94,6 @@ except:
 # Initialize ROIs & Correlator
 xi = 0
 yi = 0
-avg = 0
 x0 = 0
 y0 = 0
 dt = 0
@@ -101,8 +104,8 @@ dyl = 0
 dtl = 0
 HB = 0
 HBSrv = 0
-ipc = 1              # current  image pipeline index
 ipp = 0              # previous image pipeline index
+ipc = 1              # current  image pipeline index
 ipl = 2              # oldest   image pipeline index
 
 roi[0] = GetROI()    # quick start ROIs (will be the 'previous' at start of iterative code section
@@ -110,44 +113,55 @@ roi[0] = GetROI()    # quick start ROIs (will be the 'previous' at start of iter
 # iterative code section
 t0 = time.perf_counter()               # time zero
 
-for n in range(0, 6*200):               # about 6 images per second - debugging/test phase of project
+exp = 25*1000  # debug for exposure sweeps
+OriginFound = 0   # force origin detection
+OriginAvg = 0     # origina averaging counter
 
+for n in range(0, 6*3):               # about 6 images per second - debugging/test phase of project
+  exp = exp + 100 * 0  # debug for exposure sweeps
+  cam.set_controls({"ExposureTime": exp})
   tm[ipc]  = time.perf_counter() - t0  # image time stamp
   roi[ipc] = GetROI()                  # snap a new ROI (as current index)
 
-  # compute correlation of previous and current RIOs
+  # compute correlation of previous and current ROI
   corr=signal.correlate(np.array(roi[ipp]).astype(int), np.array(roi[ipc]).astype(int), mode='same',method='fft')
 
-  # compute centroid of correlation result to determine shift between current and previous image
+  # compute centroid of correlation result to determine shift from origin between current and previous image
   x[ipc], y[ipc] = Centroid(corr,cxs,cys)
 
   # sample correlation peak position when no motion for origin latching
   # note: in final design, averaging for origin needs to be done when there is no motion,
   # either detected by this code or told so by the server over socket
-  if (avg < 10):
-    avg = avg + 1
+  if (OriginFound == 0):
+    OriginAvg = OriginAvg + 1
     x0 = x0 + x[ipc]
     y0 = y0 + y[ipc]
-    if (avg == 10):
-      x0 = x0 / avg
-      y0 = y0 / avg
+    if (OriginAvg == 10):
+      OriginFound = 1
+      x0 = x0 / OriginAvg
+      y0 = y0 / OriginAvg
       xi = 0
       yi = 0
+      if (debug):
+        print ('origin x: {:.2f} y: {:.2f}'.format(x0, y0))
   else:
-    dx = x[ipc] - x0
-    dy = y[ipc] - y0
-    xi = xi + dx
-    yi = yi + dy
-    dt = tm[ipc] - tm[ipp]
-    # compute correlation of oldest and current RIOs
-    corr=signal.correlate(np.array(roi[ipl]).astype(int), np.array(roi[ipc]).astype(int), mode='same',method='fft')
-    # compute centroid of correlation result to determine shift between current and oldest image
-    x[ipl], y[ipl] = Centroid(corr,cxs,cys)
-    dtl = (tm[ipc] - tm[ipl]) / (ipn-1)
-    dxl = (x[ipl] - x0) / (ipn-1)
-    dyl = (y[ipl] - y0) / (ipn-1)
+    dx = x[ipc] - x0        # shift from origin in X axis between previous and current ROI
+    dy = y[ipc] - y0        # shift from origin in Y axis between previous and current ROI
+    xi = xi + dx            # integrated shifts in X axis (motion in X)
+    yi = yi + dy            # integrated shifts in Y axis (motion in Y)
+    dt = tm[ipc] - tm[ipp]  # elapsed time between previous and current ROI
 
-    if (debug and (avg == 10)):
+    # compute correlation of oldest and current RIO
+    corr=signal.correlate(np.array(roi[ipl]).astype(int), np.array(roi[ipc]).astype(int), mode='same',method='fft')
+
+    # compute centroid of correlation result to determine shift from origin between current and oldest image
+    x[ipl], y[ipl] = Centroid(corr,cxs,cys)
+
+    dxl = (x[ipl] - x0) / (ipn-1)        # shift from origin in X axis between oldest and current ROI
+    dyl = (y[ipl] - y0) / (ipn-1)        # shift from origin in X axis between oldest and current ROI
+    dtl = (tm[ipc] - tm[ipl]) / (ipn-1)  # elapsed time between oldest and current ROI
+
+    if (debug and (OriginFound != 0)):
       pathx.append(xi)
       pathy.append(yi)
       print ('{:6.3f} {:.2f} {:.2f} {:6.3f} {:6.3f} {:6.2f} {:6.2f}'.format(dt, x[ipc], y[ipc], dx, dy, xi, yi))
@@ -214,9 +228,16 @@ if (debug):
   plt.subplot(3,2,4)
   plt.title("intensity histogram")
   plt.yscale('log')
-  plt.plot(ndimage.histogram(roi[ipc],0,255,256))
+  plt.plot(ndimage.histogram(roi[ipc],min=0,max=255,bins=256))
 
   plt.subplot(3,2,5)
+  plt.title("correlation histogram")
+  plt.yscale('log')
+  maxc = np.amax(corr)
+  hcorr = ndimage.histogram(corr,min=0,max=maxc,bins=100)
+  plt.plot([i*maxc/100 for i in range(len(hcorr))], hcorr)
+
+  plt.subplot(3,2,6)
   plt.title("speckle motion")
   plt.scatter(pathx,pathy,s=1)
   plt.axis((-400,400,-350,50))
