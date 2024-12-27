@@ -1,9 +1,9 @@
+#!/usr/bin/python3
 # WatchObservatories - Andre Germain Dec 2024 - GPL licensing
 # You must credit the above for conception of speckle position sensing for telescopes, and this software
-#!/usr/bin/python3
-# RPi HQ camera
-# {'format': SRGGB12_CSI2P, 'unpacked': 'SRGGB12', 'bit_depth': 12, 'size': (4056, 3040),
-#'fps': 10.0, 'crop_limits': (0, 0, 4056, 3040), 'exposure_limits': (114, 694422939, None)}
+#
+# ROI: region of interest, or subset of the sensor for faster download and computation. ROI only needs
+# to be so large to encompass sufficient speckle patterns.
 #
 # single frame ROI
 # rpicam-still -t 20000 --shutter 500 --analoggain 2 --roi .25,.25,.1,.1
@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 from socket import socket, AF_INET, SOCK_DGRAM
 import struct
 
-debug=1         # 1 is only graphs, 2 is graphs and jpg
+debug=0         # 1 is only graphs, 2 is graphs and jpg
 
 cx=int(3280/2)  # center of sensor IMX219 todo: get from camera modes
 cy=int(2464/2)
@@ -50,7 +50,7 @@ def GetROI():   # id is for debug
   if (debug > 1):
     data = im.fromarray(roi)
     data.save('speckle{0}.jpg'.format(count))
-  return roi  #np.square(roi)
+  return roi
 
 # procedure to detect correlation peak and its centroid
 Rd=12    # centroid radius window
@@ -76,9 +76,9 @@ def Centroid(img, wx, wy):
 # Initialize camera
 cam = Picamera2()
 modes = cam.sensor_modes
-camconfig = cam.create_still_configuration(main={"size": (cxs,cys)})
+camconfig = cam.create_still_configuration(main={'size': (cxs,cys)})
 cam.configure(camconfig)   # below, no automatic image adjustments allowed
-cam.set_controls({"AwbEnable": False, "AeEnable": False, "ExposureTime": exp, "AnalogueGain": 1.0, "ScalerCrop":(cx,cy,cxs,cys)})
+cam.set_controls({"AwbEnable": False, "AeEnable": False, "ExposureTime": exp, "AnalogueGain": 1.0, "NoiseReductionMode": False, "ScalerCrop":(cx,cy,cxs,cys)})
 
 #initialize socket
 #CLIENT_IP = '192.168.2.206'
@@ -110,16 +110,42 @@ ipl = 2              # oldest   image pipeline index
 
 roi[0] = GetROI()    # quick start ROIs (will be the 'previous' at start of iterative code section
 
+# adjust exposure before tracking
+sum = 0
+cnt = 0
+for n in range (5,40):                                 # exposure range to test (in milliseconds)
+  exp = n * 1000                                       # exposure in microseconds
+  cam.set_controls({"ExposureTime": exp})              # set camera exposure
+  roi[0] = GetROI()                                    # snap ROI at set exposure
+  hist=ndimage.histogram(roi[0],min=0,max=255,bins=16) # histogram pixel brightness in 16 bins over 8 bit
+  MxSignalIndex = np.max(np.nonzero(hist))             # locate highest non empty bin
+  if (MxSignalIndex == 10):                            # add images with target highest bin
+    sum = sum + exp                                    # sum suitable exposures
+    cnt = cnt + 1                                      # track suitable exposure count
+  time.sleep(.01)
+  if (debug):
+    print('auto exposure: time {:.2f} ms index {:2d}'.format(exp/1000, MxSignalIndex))
+
+if (cnt):                  # if suitable exposures detected, average exposure sums, otherwise use default
+  exp = int(sum/cnt)
+else:
+  exp = 25000
+
+if (debug):
+  print('final exposure setting: {:.2f}'.format(exp/1000))
+
 # iterative code section
 t0 = time.perf_counter()               # time zero
 
-exp = 25*1000  # debug for exposure sweeps
 OriginFound = 0   # force origin detection
 OriginAvg = 0     # origina averaging counter
 
-for n in range(0, 6*3):               # about 6 images per second - debugging/test phase of project
+cam.set_controls({"ExposureTime": exp})
+roi[0] = GetROI()                      # start image pipeline
+
+for n in range(0, 6*400):              # about 6 images per second - debugging/test phase of project
   exp = exp + 100 * 0  # debug for exposure sweeps
-  cam.set_controls({"ExposureTime": exp})
+# cam.set_controls({"ExposureTime": exp})
   tm[ipc]  = time.perf_counter() - t0  # image time stamp
   roi[ipc] = GetROI()                  # snap a new ROI (as current index)
 
