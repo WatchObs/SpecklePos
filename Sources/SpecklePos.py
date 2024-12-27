@@ -19,13 +19,13 @@ import matplotlib.pyplot as plt
 from socket import socket, AF_INET, SOCK_DGRAM
 import struct
 
-debug=0         # 1 is only graphs, 2 is graphs and jpg
+debug=1         # 1 is only graphs, 2 is graphs and jpg
 
 cx=int(3280/2)  # center of sensor IMX219 todo: get from camera modes
 cy=int(2464/2)
 cxs=128         # ROI pixel size
 cys=cxs
-exp=30*1000     # microseconds, todo: adjust exposure from initial image flux
+exp=20*1000     # microseconds, todo: adjust exposure from initial image flux
 
 count = 0
 xi  = 0         # Integrated center shifts
@@ -88,7 +88,6 @@ except:
   SrvSocketActive = 0
 
 # Initialize ROIs & Correlator
-fpass = 1
 xi = 0
 yi = 0
 avg = 0
@@ -105,19 +104,26 @@ HBSrv = 0
 ipc = 1              # current  image pipeline index
 ipp = 0              # previous image pipeline index
 ipl = 2              # oldest   image pipeline index
-roi[0] = GetROI()    # quick start ROIs
 
-# iterative process
-t0 = time.perf_counter()   # time zero
-for n in range(0, 6*40):
-  tm[ipc]  = time.perf_counter() - t0    # image time stamp
-  roi[ipc] = GetROI()                    # snap a new ROI (as current index)
+roi[0] = GetROI()    # quick start ROIs (will be the 'previous' at start of iterative code section
+
+# iterative code section
+t0 = time.perf_counter()               # time zero
+
+for n in range(0, 6*200):               # about 6 images per second - debugging/test phase of project
+
+  tm[ipc]  = time.perf_counter() - t0  # image time stamp
+  roi[ipc] = GetROI()                  # snap a new ROI (as current index)
+
   # compute correlation of previous and current RIOs
   corr=signal.correlate(np.array(roi[ipp]).astype(int), np.array(roi[ipc]).astype(int), mode='same',method='fft')
+
   # compute centroid of correlation result to determine shift between current and previous image
   x[ipc], y[ipc] = Centroid(corr,cxs,cys)
 
   # sample correlation peak position when no motion for origin latching
+  # note: in final design, averaging for origin needs to be done when there is no motion,
+  # either detected by this code or told so by the server over socket
   if (avg < 10):
     avg = avg + 1
     x0 = x0 + x[ipc]
@@ -156,18 +162,17 @@ for n in range(0, 6*40):
   # Handle server/client traffic
   if (SrvSocketActive):
     # Data to receive
-
     try:
       buf = Socket.recv(256)
       ChkSum = 0
       for i in buf:
         ChkSum = ChkSum + i
       dataT = struct.unpack('<III', buf)
-      SrvChkSum = dataT[2]
-      if (ChkSum == SrvChkSum * 2):  # server checksum is included in summation!
-        (HBSrv, SrvStatus, SrvChkSum) = dataT
+      ChkSumSrv = dataT[2]
+      if (ChkSum == ChkSumSrv * 2):  # server checksum is included in summation!
+        (HBSrv, StatusSrv, ChkSumSrv) = dataT
       else:
-        print("bad checksum", ChkSum, SrvChkSum)
+        print("bad checksum", ChkSum, ChkSumSrv)
     except:
       pass
 
@@ -190,14 +195,8 @@ for n in range(0, 6*40):
   ipl = ipc + 1   # oldest pipeline index
   if (ipl >= ipn): ipl = 0
 
-  fpass = 0
-
 # numpy debug graphs
 if (debug):
-  print(x)
-  print(y)
-  print(tm)
-
   plt.subplots_adjust(hspace=.5)
 
   plt.subplot(3,2,1)
