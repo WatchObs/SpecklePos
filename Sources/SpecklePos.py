@@ -1,70 +1,87 @@
 #!/usr/bin/python3
-# WatchObservatories - Andre Germain Dec 2024 - GPL licensing
+#
+# WatchObservatory.com - Andre Germain Dec 2024 - GPL licensing
 # You must credit the above for conception of speckle position sensing for telescopes, and this software
 #
-# ROI: region of interest, or subset of the sensor for faster download and computation. ROI only needs
-# to be so large to encompass sufficient speckle patterns.
+# ROI: region of interest, or subset of the sensor for faster download and computation.
+# ROI only needs to be so large to encompass sufficient speckle patterns.
+#
+# With OV9281 3rd party cameras, timeout may occur. Add the following line in rpi_apps.yaml using the command below it:
+# "camera_timeout_value_ms":    5000000,
+# sudo nano /usr/share/libcamera/pipeline/rpi/vc4/rpi_apps.yaml
 #
 # single frame ROI
-# rpicam-still -t 20000 --shutter 500 --analoggain 2 --roi .25,.25,.1,.1
+#  rpicam-still -t 20000 --shutter 500 --analoggain 1 --roi .25,.25,.1,.1
+#
 # video of ROI
-# rpicam-vid -t 20000 --shutter 2000 --awbgains 1,0 False --denoise off --sat 0 --analoggain 2 --roi .5,.5,.0625,.0625 --o speckle.h264 --width 204 --height 154
+#  colour IMX219:
+#   rpicam-vid -t 20000 --shutter 2000 --awbgains 1,0 False --denoise off --sat 0 --analoggain 2 --roi .5,.5,.0625,.0625 --o speckle.h264 --width 204 --height 154
+#  mono OV9281:
+#   rpicam-vid -t 20000 --shutter 40 --denoise off --sat 0 --analoggain 1 speckle.h264 --width 1280 --height 800
 
-import sys
-import io
 import time
 import numpy as np
+import matplotlib.pyplot as plt
+import struct
 from PIL import Image as im
 from picamera2 import Picamera2
-from scipy import signal
-from scipy import datasets
-from scipy import ndimage
-import matplotlib.pyplot as plt
 from socket import socket, AF_INET, SOCK_DGRAM
-import struct
+from scipy import signal
+from scipy import ndimage
+from scipy.signal import argrelextrema
 
-debug=0         # 1 is only graphs, 2 is graphs and jpg
+debug = 1         # 1 is only graphs, 2 is graphs and jpg
 
-cx=int(3280/2)  # center of sensor IMX219 todo: get from camera modes
-cy=int(2464/2)
-cxs=128         # ROI pixel size
-cys=cxs
-exp=25*1000     # microseconds, todo: adjust exposure from initial image flux
+cx = int(1280/2) # center of sensor OV9281 TODO: get from camera modes
+cy = int(800/2)  # "
+cxs = 128        # ROI pixel size
+cys = cxs        # "
+exp0 = 7         # microseconds
 
 count = 0
-xi  = 0         # Integrated center shifts
-yi  = 0         # Integrated center shifts
+xi = 0          # Integrated center shifts
+yi = 0          # Integrated center shifts
 ipn = 4         # ROI pipeline depth
 roi = [[[0]*cxs]*cys]*ipn  # ROI pipeline
-x   = [0]*ipn   # ROI pipeline center shift in X
-y   = [0]*ipn   # ROI pipeline center shift in Y
-tm  = [0]*ipn   # ROI pipeline times
+x = [0]*ipn     # ROI pipeline center shift in X
+y = [0]*ipn     # ROI pipeline center shift in Y
+tm = [0]*ipn    # ROI pipeline times
 pathx = []      # path for plotting
 pathy = []
 
 # procedure to download ROI from sensor
-def GetROI():   # id is for debug
+def GetROI(Shift2Zero):   # id is for debug
+  tmo = time.perf_counter()
   cam.start()
+  tm1 = time.perf_counter()
+  tmm = tm1 - tmo
   img=cam.capture_array("main")
-  roi = img[:,:,1]  # extract red (todo: figure index from camera properties)
+  #print('exp {:.5f}'.format(tmm))
+
+  roi = img[:,:,1][cx:cx+cxs,cy:cy+cys]
   if (debug > 1):
     data = im.fromarray(roi)
     data.save('speckle{0}.jpg'.format(count))
-  return roi
+
+# print(roi.min())
+  if (Shift2Zero):
+    return roi - roi.min()
+  else:
+    return roi
 
 # procedure to detect correlation peak and its centroid
 Rd=12    # centroid radius window
 def Centroid(img, wx, wy):
-  SumX = 0;
-  SumY = 0;
-  Sum  = 0;
+  SumX = 0
+  SumY = 0
+  Sum  = 0
   a, b = np.unravel_index(img.argmax(), img.shape)
   for bo in range(-Rd, Rd, 1):
     y = b + bo;
     for ao in range(-Rd, Rd, 1):
       x = a + ao
-      if ((x>=0) and (x<wx) and (y>=0) and (y<wy)):
-        Sum  += img[x,y]
+      if ((x >= 0) and (x < wx) and (y >= 0) and (y < wy)):
+        Sum += img[x,y]
         SumX += img[x,y] * x
         SumY += img[x,y] * y
   if (Sum):
@@ -72,16 +89,52 @@ def Centroid(img, wx, wy):
   else:
     return(0, 0)
 
+# adjust exposure before tracking
+def SetExposure():
+  BinCnt = 16                                            # histogram bins
+  sum = 0                                                # sum of exposures that are within targeted flux
+  cnt = 0                                                # count of exposures that are within targeted flux
+  for n in range (7,400,20):                             # exposure range to test (in microseconds)
+    exp = n                                              # exposure in microseconds
+    cam.set_controls({"ExposureTime": exp})              # set camera exposure
+    roi[0] = GetROI(0)                                   # snap ROI at set exposure
+    hist=ndimage.histogram(roi[0], min = 0, max = 255, bins = BinCnt) # histogram pixel brightness in 16 bins over 8 bit
+#   print(hist)
+    MxSignalIndex = np.max(np.nonzero(hist))             # locate highest non empty bin (threshold to avoid hot pixels)
+    MnSignalIndex = np.min(np.nonzero(hist))             # locate lowest  non empty bin (threshold to avoid hot pixels)
+    if ((MxSignalIndex > 10) and (MxSignalIndex < 15)):  # add images with target highest bin
+      sum = sum + exp                                    # sum suitable exposures
+      cnt = cnt + 1                                      # track suitable exposure count
+    time.sleep(.1)
+    if (debug):
+      print('auto exposure: time {:.2f} uS index low/high {:2d}/{:2d}'.format(exp, MnSignalIndex, MxSignalIndex))
+#     print(argrelextrema(hist, np.greater))
+
+  if (cnt):                  # if suitable exposures detected, average exposure sums, otherwise use default
+    exp = int(sum/cnt)
+  else:
+    exp = exp0
+
+  if (debug):
+    print('final exposure setting: {:.2f} uS'.format(exp))
+
+  return int(exp)
+
 # START OF PROGRAM
 # Initialize camera
 cam = Picamera2()
 modes = cam.sensor_modes
-camconfig = cam.create_still_configuration(main={'size': (cxs,cys)})
-cam.configure(camconfig)   # below, no automatic image adjustments allowed
-cam.set_controls({"AwbEnable": False, "AeEnable": False, "ExposureTime": exp, "AnalogueGain": 1.0, "NoiseReductionMode": False, "ScalerCrop":(cx,cy,cxs,cys)})
+#camconfig = cam.create_still_configuration(main={'size': (cxs,cys)})   # ROI (no effect on OV9281, ok on IMX219)
+camconfig = cam.create_still_configuration(main={'size': (1280,800)})
+cam.configure(camconfig)
+#cam.camera_configuration()['raw']
+# colour camera
+#cam.set_controls({"AwbEnable": False, "AeEnable": False, "ExposureTime": exp0, "AnalogueGain": 1.0, "NoiseReductionMode": False, "ScalerCrop":(cx,cy,cxs,cys)})
+# monochrome camera, note: OV9281 3rd party doesn't seem to support ROI (ScalerCrop)
+#cam.set_controls({"AeEnable": False, "ExposureTime": exp0, "AnalogueGain": 1.0, "NoiseReductionMode": False, "ScalerCrop":(cx,cy,cxs,cys)})
+cam.set_controls({"AeEnable": False, "ExposureTime": exp0, "AnalogueGain": 1.0, "NoiseReductionMode": False})
 
 #initialize socket
-#CLIENT_IP = '192.168.2.206'
 SERVER_IP = '192.168.2.154'
 PORT_NUMBER = 50022
 SrvSocketActive = 1
@@ -108,46 +161,21 @@ ipp = 0              # previous image pipeline index
 ipc = 1              # current  image pipeline index
 ipl = 2              # oldest   image pipeline index
 
-roi[0] = GetROI()    # quick start ROIs (will be the 'previous' at start of iterative code section
-
-# adjust exposure before tracking
-sum = 0
-cnt = 0
-for n in range (5,40):                                 # exposure range to test (in milliseconds)
-  exp = n * 1000                                       # exposure in microseconds
-  cam.set_controls({"ExposureTime": exp})              # set camera exposure
-  roi[0] = GetROI()                                    # snap ROI at set exposure
-  hist=ndimage.histogram(roi[0],min=0,max=255,bins=16) # histogram pixel brightness in 16 bins over 8 bit
-  MxSignalIndex = np.max(np.nonzero(hist))             # locate highest non empty bin
-  if (MxSignalIndex == 10):                            # add images with target highest bin
-    sum = sum + exp                                    # sum suitable exposures
-    cnt = cnt + 1                                      # track suitable exposure count
-  time.sleep(.01)
-  if (debug):
-    print('auto exposure: time {:.2f} ms index {:2d}'.format(exp/1000, MxSignalIndex))
-
-if (cnt):                  # if suitable exposures detected, average exposure sums, otherwise use default
-  exp = int(sum/cnt)
-else:
-  exp = 25000
-
-if (debug):
-  print('final exposure setting: {:.2f}'.format(exp/1000))
-
-# iterative code section
-t0 = time.perf_counter()               # time zero
-
-OriginFound = 0   # force origin detection
-OriginAvg = 0     # origina averaging counter
-
+exp = SetExposure()  # adjust exposure
+#exp = 100
 cam.set_controls({"ExposureTime": exp})
-roi[0] = GetROI()                      # start image pipeline
+# iterative code section
+t0 = time.perf_counter() # time zero
+OriginFound = 0          # force origin detection
+OriginAvg = 0            # origin averaging counter
 
-for n in range(0, 6*400):              # about 6 images per second - debugging/test phase of project
-  exp = exp + 100 * 0  # debug for exposure sweeps
+roi[0] = GetROI(1)       # start image pipeline
+
+for n in range(0, 6*5):  # about 6 images per second - debugging/test phase of project
+# exp = exp + 100 * 0    # debug for exposure sweeps
 # cam.set_controls({"ExposureTime": exp})
   tm[ipc]  = time.perf_counter() - t0  # image time stamp
-  roi[ipc] = GetROI()                  # snap a new ROI (as current index)
+  roi[ipc] = GetROI(1)                 # snap a new ROI (as current index)
 
   # compute correlation of previous and current ROI
   corr=signal.correlate(np.array(roi[ipp]).astype(int), np.array(roi[ipc]).astype(int), mode='same',method='fft')
@@ -222,7 +250,8 @@ for n in range(0, 6*400):              # about 6 images per second - debugging/t
     # Data to send
     Status = 0      # local status, TODO
     ChkSum = 0
-    buf = struct.pack('<IIIfffffffff',HB,HBSrv,Status,tm[ipc],dt,dtl,dx,dxl,dy,dyl,xi,yi)
+#   buf = struct.pack('<IIIfffffffff',HB,HBSrv,Status,tm[ipc],dt,dtl,dx,dxl,dy,dyl,xi,yi)
+    buf = struct.pack('<IIIfffffffff',HB,HBSrv,Status,tm[ipc],dt,dtl,dx,dxl,dy,dyl,float(exp/1000),yi)
     for i in buf:
       ChkSum = ChkSum + i
     buf = buf[:len(buf)] + struct.pack('<I',ChkSum)
@@ -253,12 +282,12 @@ if (debug):
 
   plt.subplot(3,2,4)
   plt.title("intensity histogram")
-  plt.yscale('log')
+#  plt.yscale('log')
   plt.plot(ndimage.histogram(roi[ipc],min=0,max=255,bins=256))
 
   plt.subplot(3,2,5)
   plt.title("correlation histogram")
-  plt.yscale('log')
+#  plt.yscale('log')
   maxc = np.amax(corr)
   hcorr = ndimage.histogram(corr,min=0,max=maxc,bins=100)
   plt.plot([i*maxc/100 for i in range(len(hcorr))], hcorr)
