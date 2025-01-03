@@ -10,13 +10,13 @@
 # "camera_timeout_value_ms":    5000000,
 # sudo nano /usr/share/libcamera/pipeline/rpi/vc4/rpi_apps.yaml
 #
-# single frame ROI
+# single frame ROI (not functional with OV9281)
 #  rpicam-still -t 20000 --shutter 500 --analoggain 1 --roi .25,.25,.1,.1
 #
 # video of ROI
 #  colour IMX219:
 #   rpicam-vid -t 20000 --shutter 2000 --awbgains 1,0 False --denoise off --sat 0 --analoggain 2 --roi .5,.5,.0625,.0625 --o speckle.h264 --width 204 --height 154
-#  mono OV9281:
+#  mono OV9281: (no ROI available)
 #   rpicam-vid -t 20000 --shutter 40 --denoise off --sat 0 --analoggain 1 speckle.h264 --width 1280 --height 800
 
 import time
@@ -28,7 +28,6 @@ from picamera2 import Picamera2
 from socket import socket, AF_INET, SOCK_DGRAM
 from scipy import signal
 from scipy import ndimage
-from scipy.signal import argrelextrema
 
 debug = 1         # 1 is only graphs, 2 is graphs and jpg
 
@@ -36,87 +35,103 @@ cx = int(1280/2) # center of sensor OV9281 TODO: get from camera modes
 cy = int(800/2)  # "
 cxs = 128        # ROI pixel size
 cys = cxs        # "
-exp0 = 7         # microseconds
+exp0 = 7         # default exposure in microseconds
+exp = exp0       # exposure in microseconds
 
 count = 0
 xi = 0          # Integrated center shifts
 yi = 0          # Integrated center shifts
-ipn = 4         # ROI pipeline depth
+ipn = 5         # ROI pipeline depth
 roi = [[[0]*cxs]*cys]*ipn  # ROI pipeline
+DarkF = 0       # 'dark frame' as it were, to increase CM estimate quality
 x = [0]*ipn     # ROI pipeline center shift in X
 y = [0]*ipn     # ROI pipeline center shift in Y
 tm = [0]*ipn    # ROI pipeline times
 pathx = []      # path for plotting
 pathy = []
 
+# precision delay (microseconds)
+def Delay(uS):
+  t0 = time.perf_counter() + uS / 1000000
+  while (time.perf_counter() < t0):
+    pass
+
 # procedure to download ROI from sensor
 def GetROI(Shift2Zero):   # id is for debug
-  tmo = time.perf_counter()
+  global exp
+  global DarkF
   cam.start()
-  tm1 = time.perf_counter()
-  tmm = tm1 - tmo
+  Delay(exp)
   img=cam.capture_array("main")
-  #print('exp {:.5f}'.format(tmm))
-
+  cam.stop()
   roi = img[:,:,1][cx:cx+cxs,cy:cy+cys]
   if (debug > 1):
-    data = im.fromarray(roi)
+    roidf = np.clip((roi.astype(np.int16) - DarkF),a_min=0, a_max=255)
+    data = im.fromarray(roidf.astype(np.uint8))
     data.save('speckle{0}.jpg'.format(count))
 
-# print(roi.min())
   if (Shift2Zero):
-    return roi - roi.min()
+    return np.clip((roi.astype(np.int16) - DarkF),a_min=0, a_max=255)
   else:
     return roi
 
 # procedure to detect correlation peak and its centroid
 Rd=12    # centroid radius window
 def Centroid(img, wx, wy):
-  SumX = 0
-  SumY = 0
-  Sum  = 0
+  SumX = 0   # sum of X 'moments'
+  SumY = 0   # sum of Y 'moments'
+  SumM = 0   # sum of 'masses'
   a, b = np.unravel_index(img.argmax(), img.shape)
   for bo in range(-Rd, Rd, 1):
     y = b + bo;
     for ao in range(-Rd, Rd, 1):
       x = a + ao
       if ((x >= 0) and (x < wx) and (y >= 0) and (y < wy)):
-        Sum += img[x,y]
+        SumM += img[x,y]
         SumX += img[x,y] * x
         SumY += img[x,y] * y
-  if (Sum):
-    return(SumX/Sum, SumY/Sum)
+  if (SumM):
+    return(SumX/SumM, SumY/SumM)
   else:
     return(0, 0)
 
 # adjust exposure before tracking
 def SetExposure():
-  BinCnt = 16                                            # histogram bins
+  global exp
+  global DarkF
   sum = 0                                                # sum of exposures that are within targeted flux
   cnt = 0                                                # count of exposures that are within targeted flux
-  for n in range (7,400,20):                             # exposure range to test (in microseconds)
+  for n in range (7,45,3):                               # exposure range to test (in microseconds)
     exp = n                                              # exposure in microseconds
     cam.set_controls({"ExposureTime": exp})              # set camera exposure
-    roi[0] = GetROI(0)                                   # snap ROI at set exposure
-    hist=ndimage.histogram(roi[0], min = 0, max = 255, bins = BinCnt) # histogram pixel brightness in 16 bins over 8 bit
-#   print(hist)
+    roi = GetROI(0)                                      # snap ROI at set exposure
+    hist=ndimage.histogram(roi, min = 0, max = 255, bins = 256) # histogram pixel brightness in 16 bins over 8 bit
     MxSignalIndex = np.max(np.nonzero(hist))             # locate highest non empty bin (threshold to avoid hot pixels)
     MnSignalIndex = np.min(np.nonzero(hist))             # locate lowest  non empty bin (threshold to avoid hot pixels)
-    if ((MxSignalIndex > 10) and (MxSignalIndex < 15)):  # add images with target highest bin
+    if ((MxSignalIndex > 160) and (MxSignalIndex < 240)):# add images with target highest bin
       sum = sum + exp                                    # sum suitable exposures
       cnt = cnt + 1                                      # track suitable exposure count
-    time.sleep(.1)
     if (debug):
       print('auto exposure: time {:.2f} uS index low/high {:2d}/{:2d}'.format(exp, MnSignalIndex, MxSignalIndex))
-#     print(argrelextrema(hist, np.greater))
 
   if (cnt):                  # if suitable exposures detected, average exposure sums, otherwise use default
     exp = int(sum/cnt)
   else:
     exp = exp0
 
+  #snap final image at target exposure and extract histogram extent
+  cam.set_controls({"ExposureTime": exp})              # set camera exposure
+  roi = GetROI(0)                                      # snap ROI at set exposure
+  hist=ndimage.histogram(roi, min = 0, max = 255, bins = 256) # histogram pixel brightness in 16 bins over 8 bit
+# print(hist)
+  MxSignalIndex = np.max(np.nonzero(hist))             # locate highest non empty bin (threshold to avoid hot pixels)
+  MnSignalIndex = np.min(np.nonzero(hist))             # locate lowest  non empty bin (threshold to avoid hot pixels)
+# DarkF = int((MxSignalIndex + MnSignalIndex)/2)       # lower cutoff (dark frame) for further imaging - middle of family
+  DarkF = np.array(hist).argmax()                      # lower cutoff (dark frame) for further imaging - maximum value index
+
   if (debug):
-    print('final exposure setting: {:.2f} uS'.format(exp))
+    print('final exposure setting: {:.2f} uS index low/high {:3d}/{:3d}'.format(exp, MnSignalIndex, MxSignalIndex))
+    print('dark frame threshold: {:3d}'.format(DarkF))
 
   return int(exp)
 
@@ -131,7 +146,6 @@ cam.configure(camconfig)
 # colour camera
 #cam.set_controls({"AwbEnable": False, "AeEnable": False, "ExposureTime": exp0, "AnalogueGain": 1.0, "NoiseReductionMode": False, "ScalerCrop":(cx,cy,cxs,cys)})
 # monochrome camera, note: OV9281 3rd party doesn't seem to support ROI (ScalerCrop)
-#cam.set_controls({"AeEnable": False, "ExposureTime": exp0, "AnalogueGain": 1.0, "NoiseReductionMode": False, "ScalerCrop":(cx,cy,cxs,cys)})
 cam.set_controls({"AeEnable": False, "ExposureTime": exp0, "AnalogueGain": 1.0, "NoiseReductionMode": False})
 
 #initialize socket
@@ -162,18 +176,16 @@ ipc = 1              # current  image pipeline index
 ipl = 2              # oldest   image pipeline index
 
 exp = SetExposure()  # adjust exposure
-#exp = 100
 cam.set_controls({"ExposureTime": exp})
+
 # iterative code section
 t0 = time.perf_counter() # time zero
 OriginFound = 0          # force origin detection
 OriginAvg = 0            # origin averaging counter
 
-roi[0] = GetROI(1)       # start image pipeline
+roi[ipp] = GetROI(1)     # start image pipeline (with 'dark frame' substraction)
 
-for n in range(0, 6*5):  # about 6 images per second - debugging/test phase of project
-# exp = exp + 100 * 0    # debug for exposure sweeps
-# cam.set_controls({"ExposureTime": exp})
+for n in range(0, 5*100): # about 5 images per second - debugging/test phase of project
   tm[ipc]  = time.perf_counter() - t0  # image time stamp
   roi[ipc] = GetROI(1)                 # snap a new ROI (as current index)
 
@@ -212,13 +224,13 @@ for n in range(0, 6*5):  # about 6 images per second - debugging/test phase of p
     x[ipl], y[ipl] = Centroid(corr,cxs,cys)
 
     dxl = (x[ipl] - x0) / (ipn-1)        # shift from origin in X axis between oldest and current ROI
-    dyl = (y[ipl] - y0) / (ipn-1)        # shift from origin in X axis between oldest and current ROI
+    dyl = (y[ipl] - y0) / (ipn-1)        # shift from origin in Y axis between oldest and current ROI
     dtl = (tm[ipc] - tm[ipl]) / (ipn-1)  # elapsed time between oldest and current ROI
 
     if (debug and (OriginFound != 0)):
       pathx.append(xi)
       pathy.append(yi)
-      print ('{:6.3f} {:.2f} {:.2f} {:6.3f} {:6.3f} {:6.2f} {:6.2f}'.format(dt, x[ipc], y[ipc], dx, dy, xi, yi))
+      print ('dt:{:6.3f} dx:{:6.3f} dy:{:6.3f} xi:{:6.2f} yi:{:6.2f}'.format(dt, dx, dy, xi, yi))
       if (debug > 1):
         data = im.fromarray((corr/np.max(corr)*255).astype(np.uint8))
         data.save('corr{0}.jpg'.format(count))
@@ -250,8 +262,8 @@ for n in range(0, 6*5):  # about 6 images per second - debugging/test phase of p
     # Data to send
     Status = 0      # local status, TODO
     ChkSum = 0
-#   buf = struct.pack('<IIIfffffffff',HB,HBSrv,Status,tm[ipc],dt,dtl,dx,dxl,dy,dyl,xi,yi)
-    buf = struct.pack('<IIIfffffffff',HB,HBSrv,Status,tm[ipc],dt,dtl,dx,dxl,dy,dyl,float(exp/1000),yi)
+    buf = struct.pack('<IIIfffffffff',HB,HBSrv,Status,tm[ipc],dt,dtl,dx,dxl,dy,dyl,xi,yi)
+#   buf = struct.pack('<IIIfffffffff',HB,HBSrv,Status,tm[ipc],dt,dtl,dx,dxl,dy,dyl,float(exp/1000),yi)
     for i in buf:
       ChkSum = ChkSum + i
     buf = buf[:len(buf)] + struct.pack('<I',ChkSum)
@@ -282,12 +294,12 @@ if (debug):
 
   plt.subplot(3,2,4)
   plt.title("intensity histogram")
-#  plt.yscale('log')
+  plt.yscale('log')
   plt.plot(ndimage.histogram(roi[ipc],min=0,max=255,bins=256))
 
   plt.subplot(3,2,5)
   plt.title("correlation histogram")
-#  plt.yscale('log')
+  plt.yscale('log')
   maxc = np.amax(corr)
   hcorr = ndimage.histogram(corr,min=0,max=maxc,bins=100)
   plt.plot([i*maxc/100 for i in range(len(hcorr))], hcorr)
@@ -295,7 +307,7 @@ if (debug):
   plt.subplot(3,2,6)
   plt.title("speckle motion")
   plt.scatter(pathx,pathy,s=1)
-  plt.axis((-400,400,-350,50))
+  plt.axis((-200,200,-200,200))
 
   plt.show()
 
