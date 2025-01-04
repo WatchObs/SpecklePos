@@ -52,14 +52,15 @@ pathy = []
 
 # precision delay (microseconds)
 def Delay(uS):
-  t0 = time.perf_counter() + uS / 1000000
-  while (time.perf_counter() < t0):
+  t0 = time.perf_counter_ns() + uS * 1000
+  while (time.perf_counter_ns() < t0):
     pass
 
 # procedure to download ROI from sensor
 def GetROI(Shift2Zero):   # id is for debug
   global exp
   global DarkF
+  global count
   cam.start()
   Delay(exp)
   img=cam.capture_array("main")
@@ -77,20 +78,25 @@ def GetROI(Shift2Zero):   # id is for debug
 
 # procedure to detect correlation peak and its centroid
 Rd=12    # centroid radius window
-def Centroid(img, wx, wy):
+def Centroid(img, sel):
   SumX = 0   # sum of X 'moments'
   SumY = 0   # sum of Y 'moments'
   SumM = 0   # sum of 'masses'
-  a, b = np.unravel_index(img.argmax(), img.shape)
-  for bo in range(-Rd, Rd, 1):
-    y = b + bo;
-    for ao in range(-Rd, Rd, 1):
-      x = a + ao
-      if ((x >= 0) and (x < wx) and (y >= 0) and (y < wy)):
-        SumM += img[x,y]
-        SumX += img[x,y] * x
-        SumY += img[x,y] * y
-  if (SumM):
+  img = img - np.min(img)   # lower to zero bottom of 2D shape
+  w = img.shape             # fetch array size
+  a0, b0 = np.unravel_index(img.argmax(), w)  # brightest cell
+  for a in range(-Rd, Rd+1, 1):               # sweep X axis by Rd either side of brightest cell
+    x = a + a0
+    for b in range(-Rd, Rd+1, 1):             # sweep Y axis by Rd either side of brightest cell
+      y = b + b0
+      SumM += img[x][y]
+      SumX += img[x][y] * x
+      SumY += img[x][y] * y
+
+  if (sel > 0):
+    print('{:2d} {:2d} {:.2f} {:.2f} {:.2f}'.format(count, a0, SumX/SumM, SumX, SumY))
+
+  if (SumM > 0):
     return(SumX/SumM, SumY/SumM)
   else:
     return(0, 0)
@@ -123,7 +129,6 @@ def SetExposure():
   cam.set_controls({"ExposureTime": exp})              # set camera exposure
   roi = GetROI(0)                                      # snap ROI at set exposure
   hist=ndimage.histogram(roi, min = 0, max = 255, bins = 256) # histogram pixel brightness in 16 bins over 8 bit
-# print(hist)
   MxSignalIndex = np.max(np.nonzero(hist))             # locate highest non empty bin (threshold to avoid hot pixels)
   MnSignalIndex = np.min(np.nonzero(hist))             # locate lowest  non empty bin (threshold to avoid hot pixels)
 # DarkF = int((MxSignalIndex + MnSignalIndex)/2)       # lower cutoff (dark frame) for further imaging - middle of family
@@ -185,15 +190,15 @@ OriginAvg = 0            # origin averaging counter
 
 roi[ipp] = GetROI(1)     # start image pipeline (with 'dark frame' substraction)
 
+# START OF REAL TIME LOOP
 for n in range(0, 5*100): # about 5 images per second - debugging/test phase of project
   tm[ipc]  = time.perf_counter() - t0  # image time stamp
   roi[ipc] = GetROI(1)                 # snap a new ROI (as current index)
 
   # compute correlation of previous and current ROI
-  corr=signal.correlate(np.array(roi[ipp]).astype(int), np.array(roi[ipc]).astype(int), mode='same',method='fft')
-
+  corr=signal.correlate(np.array(roi[ipp]).astype(float), np.array(roi[ipc]).astype(float), mode='same', method='fft')
   # compute centroid of correlation result to determine shift from origin between current and previous image
-  x[ipc], y[ipc] = Centroid(corr,cxs,cys)
+  x[ipc], y[ipc] = Centroid(corr,1)
 
   # sample correlation peak position when no motion for origin latching
   # note: in final design, averaging for origin needs to be done when there is no motion,
@@ -208,8 +213,8 @@ for n in range(0, 5*100): # about 5 images per second - debugging/test phase of 
       y0 = y0 / OriginAvg
       xi = 0
       yi = 0
-      if (debug):
-        print ('origin x: {:.2f} y: {:.2f}'.format(x0, y0))
+      print ('origin x: {:.2f} y: {:.2f}'.format(x0, y0))
+      print ('===============================')
   else:
     dx = x[ipc] - x0        # shift from origin in X axis between previous and current ROI
     dy = y[ipc] - y0        # shift from origin in Y axis between previous and current ROI
@@ -217,11 +222,10 @@ for n in range(0, 5*100): # about 5 images per second - debugging/test phase of 
     yi = yi + dy            # integrated shifts in Y axis (motion in Y)
     dt = tm[ipc] - tm[ipp]  # elapsed time between previous and current ROI
 
-    # compute correlation of oldest and current RIO
-    corr=signal.correlate(np.array(roi[ipl]).astype(int), np.array(roi[ipc]).astype(int), mode='same',method='fft')
-
+    # compute correlation of oldest and current RIO and floor to lowest value
+    corr = signal.correlate(np.array(roi[ipl]).astype(float), np.array(roi[ipc]).astype(float), mode='same',method='fft')
     # compute centroid of correlation result to determine shift from origin between current and oldest image
-    x[ipl], y[ipl] = Centroid(corr,cxs,cys)
+    x[ipl], y[ipl] = Centroid(corr,0)
 
     dxl = (x[ipl] - x0) / (ipn-1)        # shift from origin in X axis between oldest and current ROI
     dyl = (y[ipl] - y0) / (ipn-1)        # shift from origin in Y axis between oldest and current ROI
