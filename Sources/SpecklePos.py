@@ -157,8 +157,8 @@ def SetExposure():
   MxIdx = np.max(np.nonzero(hist))             # locate highest non empty bin
   MnIdx = np.min(np.nonzero(hist))             # locate lowest  non empty bin
 # DarkF = np.array(hist).argmax()              # lower cutoff (dark) for further imaging - maximum value index
-# DarkF = int((MxIdx - MnIdx)/3 + MnIdx)       # lower cutoff (dark) for further imaging - portion of family
-  DarkF = MnIdx
+  DarkF = int((MxIdx - MnIdx)/3 + MnIdx)       # lower cutoff (dark) for further imaging - portion of family
+# DarkF = MnIdx
 
   print('auto exposure setting: {:.2f} uS index low/high {:3d}/{:3d}'.format(exp0, MnIdx, MxIdx))
   print('dark threshold: {:3d}'.format(DarkF))
@@ -257,7 +257,7 @@ for n in range(0, ipn, 1):
 t0 = time.perf_counter() # time zero
 
 # START OF REAL TIME LOOP
-for n in range(0, 5*2): # approx 5 images per second - debugging/test phase of project
+for n in range(0, 5*400): # approx 5 images per second - debugging/test phase of project
   tm[ipc]  = time.perf_counter() - t0  # image time stamp
   roi[ipc] = GetROI(1)                 # snap a new ROI (as current index)
 
@@ -275,9 +275,9 @@ for n in range(0, 5*2): # approx 5 images per second - debugging/test phase of p
   corrl = np.subtract(signal.correlate(np.array(roi[ipl]).astype(float), np.array(roi[ipc]).astype(float), mode='same', method='fft'), 0) #corr0)
   # compute centroid of correlation result to determine shift from origin between current and oldest image
   x[ipl], y[ipl] = Centroid(corrl,1)
-  dxl = (x[ipl] - x0) #/ (ipn-1)        # shift from origin in X axis between oldest and current ROI
-  dyl = (y[ipl] - y0) #/ (ipn-1)        # shift from origin in Y axis between oldest and current ROI
-  dtl = (tm[ipc] - tm[ipl]) #/ (ipn-1)  # elapsed time between oldest and current ROI
+  dxl = (x[ipl] - x0) / (ipn-1)        # shift from origin in X axis between oldest and current ROI
+  dyl = (y[ipl] - y0) / (ipn-1)        # shift from origin in Y axis between oldest and current ROI
+  dtl = (tm[ipc] - tm[ipl]) / (ipn-1)  # elapsed time between oldest and current ROI
 
   if (debug): # and (OriginFound != 0)):
     pathx.append(xi)
@@ -382,10 +382,10 @@ if (debug):
     Y = np.arange(0,cys,1)
     X, Y = np.meshgrid(X, Y)
     fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
-    ax.plot_surface(X, Y, roi16, cmap='Purples')
+    ax.plot_surface(X, Y, roib, cmap='Purples')
     ax.set_xlim(0,cxs)
     ax.set_ylim(0,cys)
-    ax.set_zlim(0,np.max(roi16))
+    ax.set_zlim(0,np.max(roib))
 
     X = np.arange(50,78,1)
     Y = np.arange(50,78,1)
@@ -393,21 +393,13 @@ if (debug):
     fig, bx = plt.subplots(subplot_kw={"projection": "3d"})
     corrlz = corrl[50:78,50:78]
     bx.plot_surface(X, Y, corrlz, cmap='Purples')
-#    bx.set_xlim(40,84)#cxs)
-#    bx.set_ylim(40,84)#cys)
-#    bx.set_zlim(0,np.max(corrlz))
 
-#    X = np.arange(0,cxs,1)
-#    Y = np.arange(0,cys,1)
     X = np.arange(50,78,1)
     Y = np.arange(50,78,1)
     X, Y = np.meshgrid(X, Y)
     fig, cx = plt.subplots(subplot_kw={"projection": "3d"})
     corr0z = corr0[50:78,50:78]
     cx.plot_surface(X, Y, corr0z, cmap='Purples')
-#    cx.set_xlim(40,84)#cxs)
-#    cx.set_ylim(40,84)#cys)
-#    cx.set_zlim(0,np.max(corrlz))
 
     plt.show()
 
