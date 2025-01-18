@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 #
-# WatchObservatory.com - Andre Germain Dec 2024 - GPL licensing
+# WatchObservatory.com - Andre Germain Jan 2025 - GPL licensing
 # You must credit the above for conception of speckle position sensing for telescopes, and this software
 #
 # ROI: region of interest, or subset of the sensor for faster download and computation.
@@ -10,15 +10,16 @@
 # "camera_timeout_value_ms":    5000000,
 # sudo nano /usr/share/libcamera/pipeline/rpi/vc4/rpi_apps.yaml
 #
-# single frame ROI (not functional with OV9281)
+# single frame ROI
 #  rpicam-still -t 20000 --shutter 500 --analoggain 1 --roi .25,.25,.1,.1
+#  rpicam-still --raw --shutter 7 --timeout 20000 --width 1280 --height 800
 #
 # video of ROI
-#  mono OV9281: (no ROI available)
+#  mono OV9281:
 #   rpicam-vid -t 20000 --shutter 40 --denoise off --sat 0 --analoggain 1 speckle.h264 --width 1280 --height 800
+#   rpicam-vid -t 240s --width 1280 --height 800 --shutter 10 -o raw.h264 --nopr
 #
-# To control light source brightness, pigpio was used as it has a more solid h/w based PWM as compared to GPIO
-# You must start its daemon before running this script: sudo pigpiod
+# light source is controlled via GPIO library
 
 import time
 from subprocess import Popen, PIPE
@@ -31,22 +32,31 @@ from picamera2 import Picamera2
 from socket import socket, AF_INET, SOCK_DGRAM
 from scipy import signal
 from scipy import ndimage
+import os
+os.environ['LIBCAMERA_LOG_LEVELS'] = '4'   # silence libcamera2
 
 debug = 1        # 1 is only graphs, 2 is graphs and jpg
 
 SpecklePosFlatFrame = 'SpecklePosFlatFrame.npy'  # flat fiel file name
 
-cx = int(1280/2) # center of sensor OV9281 TODO: get from camera modes
-cy = int(800/2)  # "
+# OV9281 camera
+cx  = 1280       # X pixel count TODO: get from camera
+cy  = 800        # Y pixle count
+cxo = int(cx/2)  # center of sensor
+cyo = int(cy/2)  # "
 cxs = 128        # ROI pixel size (NOTE: use power of 2 for FFT correlator)
-cys = cxs        # "
+cys = 128        # "
 
 count = 0
-ipn = 5         # ROI pipeline depth
+ipn = 5                                           # ROI pipeline depth
+stn = 5                                           # stacking depth
+R     = np.zeros((cxs,cys), dtype=float)          # FFT cross product freq domain
+r     = np.zeros((cxs,cys), dtype=float)          # FFT inverse cross prouct spatial domain
 roi   = [np.zeros((cxs,cys), dtype=float)] * ipn  # ROI pipeline
+rois  = [np.zeros((cxs,cys), dtype=float)] * stn  # ROI stack
 roib  = np.zeros((cxs,cys), dtype=float)          # ROI background
 roiff = np.ones((cxs,cys), dtype=float)           # ROI flat field
-roiff_= np.ones((cxs,cys), dtype=float)           # ROI flat field accumlator
+roiff_= np.ones((cxs,cys), dtype=float)           # ROI flat field accumulator
 roix  = np.zeros((cxs,cys), dtype=float)          # ROI scratch pad
 DarkF = 0       # 'dark field' as it were, to increase CM estimate quality
 x = [0]*ipn     # ROI pipeline center shift in X
@@ -67,13 +77,36 @@ def GetROI(Shift2Zero):
   global exp
   global DarkF
   global roib
+  global rois
+  global stn
   global count
 
-  cam.start()
-  Delay(exp)
-  img = cam.capture_array("main")
-  cam.stop()
-  roi = img[:,:,1][cx:cx+cxs,cy:cy+cys].astype(float) - roib
+# t0 = time.perf_counter_ns()
+#  img = cam.capture_array("main") #.astype(float)
+# Delay(exp)   # NO NEED since capture_array is blocking by default
+# t1 = time.perf_counter_ns()
+# print((t1-t0)/1000000)
+# img10b = (img[:, 0::5] << 2) | (img[:, 1::5] >> 6)
+# print(img.shape)
+# print(img10b.shape)
+# roi = img[:,:,1].astype(float) - roib  # main
+# roi = img[:,:,1][cxo:cxo+cxs,cyo:cyo+cys].astype(float) - roib  # main
+# roi = img10b[cxo:cxo+cxs,cyo:cyo+cys].astype(float) - roib  #raw
+# roi = img[cxo:cxo+cxs,cyo:cyo+cys].astype(float) - roib  #raw
+
+  # average ROIs for SNR
+  ts0 = time.perf_counter_ns()
+  for m in range(0, stn):  # burst capture images for SNR
+    img = cam.capture_array("main")
+    rois[m] = img[:,:,1].astype(float) - roib  # main
+  ts1 = time.perf_counter_ns()
+  print("stacking time (ms): ",int((ts1-ts0)/1000000))
+
+  # stack images and average
+  roi = rois[0]
+  for m in range(1, stn):
+    roi = np.add(roi, rois[m])
+  roi /= stn
 
   if (Shift2Zero):
     roi = np.clip((roi - DarkF), a_min=0, a_max=255)
@@ -85,7 +118,7 @@ def GetROI(Shift2Zero):
 
 # procedure to detect correlation peak and its centroid
 def Centroid(roi, sel):
-  Rd = 1     # centroid radius window
+  Rd = 2     # centroid radius window
   SumX = 0   # sum of X 'moments'
   SumY = 0   # sum of Y 'moments'
   SumM = 0   # sum of 'masses'
@@ -132,7 +165,7 @@ def SetExposure():
   global exp
   global exp0
 
-  for exp in range (7,45,1):                    # exposure range to test (in microseconds)
+  for exp in range (7,45,2):                    # exposure range to test (in microseconds)
     cam.set_controls({"ExposureTime": exp})     # set camera exposure
     roi = GetROI(0)                             # snap ROI at set exposure
     hist = ndimage.histogram(roi, min = 0, max = 255, bins = 256) # histogram pixel brightness in 16 bins over 8 bit
@@ -168,12 +201,21 @@ exp0 = 7         # default exposure in microseconds
 exp = exp0       # exposure in microseconds
 cam = Picamera2()
 modes = cam.sensor_modes
-#camconfig = cam.create_still_configuration(main={'size': (cxs,cys)})   # ROI (no effect on OV9281)
-camconfig = cam.create_still_configuration(main={'size': (1280,800)})
+if (0):
+  for n in range (1,6): print(modes[n])
+camconfig = cam.create_still_configuration(main={'size': (cxs,cys)}, queue=False)   # size same as ROI
+#camconfig = cam.create_still_configuration(main={'size': (1280,800)}, queue=False)
+#camconfig = cam.create_still_configuration(raw={'size': (1280,800), 'format' : 'R10_CSI2P'}, queue=False)
+#camconfig = cam.create_still_configuration(raw={'size': (cxs,cys), 'format' : 'R8'}, queue=False)
 cam.configure(camconfig)
-#cam.camera_configuration()['raw']
-# monochrome camera, note: OV9281 3rd party doesn't seem to support ROI (ScalerCrop)
-cam.set_controls({"AeEnable": False, "ExposureTime": exp0, "AnalogueGain": 1.0, "NoiseReductionMode": False})
+crop = (cxo, cyo, cxs, cys)
+cam.set_controls({"AeEnable": False, "ExposureTime": exp0, "AnalogueGain": 1.0, "NoiseReductionMode": False, "ScalerCrop": crop})
+#print(cam.camera_controls['ScalerCrop'])
+#print("ROI: ",cxs,"/",cys)
+#print(cam.camera_configuration())
+#stride = camconfig['raw']['stride']
+#print("raw pixel byte width ", stride)
+cam.start()
 
 #initialize socket
 SERVER_IP = '192.168.2.154'
@@ -203,6 +245,10 @@ ipp = 0         # previous image pipeline index
 ipc = 1         # current  image pipeline index
 ipl = 2         # oldest   image pipeline index
 
+# ROI windows for fft
+window1d = signal.windows.tukey(cxs, alpha=.2, sym=True)  # TODO, should make with cxs and cys as they may not be the same
+window2d = np.sqrt(np.outer(window1d, window1d))
+
 # set light source control
 LightPin=12
 GPIO.setmode(GPIO.BCM)
@@ -212,12 +258,13 @@ GPIO.setup(LightPin, GPIO.OUT)
 GPIO.output(LightPin, GPIO.HIGH)   # light source on
 time.sleep(.25)              # wait for light source to stabilize
 exp = SetExposure()          # adjust exposure
+#exp = 500000 # test
 cam.set_controls({"ExposureTime": exp})
 
 # switch off light source to sample background frame (roib)
 GPIO.output(LightPin, GPIO.LOW)   # light source off
 time.sleep(.25)             # wait for light source to stabilize
-bn = 50
+bn = 25
 for n in range (0, bn+1, 1):
   roix = np.add(roix, GetROI(0))
 roib = roix / bn           # average ROI background
@@ -253,35 +300,60 @@ for n in range(0, ipn, 1):
 t0 = time.perf_counter();
 
 # START OF REAL TIME LOOP
-for n in range(0, 4*480): # approx 5 images per second - debugging/test phase of project
+for n in range(0, 4*5): # 4 images per second - debugging/test phase of project
   tm[ipc]  = time.perf_counter() - t0  # image time stamp
-  roi[ipc] = GetROI(1)                 # snap a new ROI (as current index)
+
+  roi[ipc] = GetROI(1)
 
   # flat frame - must do this on ROI before these are flat framed!
   if (RateSrv != 0):   # TODO, logic on HBSrv
     if (ROIFFCnt < 1000):
       ROIFFCnt = ROIFFCnt + 1
       roiff_ = roiff_ + roi[ipc]
-  roiraw = roi[ipc]   # for graphing (debug)
-  roi[ipc] = np.multiply(roi[ipc], roiff)  # apply flat field
 
-  # compute correlation of previous and current ROI
+  roi[ipc] = np.multiply(roi[ipc], roiff)  # apply flat field - DO NOT MOVE above flat frame accumulator!
+
+  # compute correlation (previous, current), (oldest, current) ROI
   corrc = np.subtract(signal.correlate(roi[ipp], roi[ipc], mode='same', method='fft'), 0)
-  # compute centroid of correlation result to determine shift from origin between current and previous image
+  corrl = np.subtract(signal.correlate(roi[ipl], roi[ipc], mode='same', method='fft'), 0)
+  # compute phase shift in frequency domain and return to spatial domain for linear shift, both axes
+  if (0):  # fft method
+#   fftp = np.fft.rfft2(np.multiply(roi[ipp],window2d))  # fft of previous ROI
+#   fftc = np.fft.rfft2(np.multiply(roi[ipc],window2d))  # fft of current  ROI
+    fftp = np.fft.rfft2(roi[ipl])           # fft of previous ROI
+    fftc = np.fft.rfft2(roi[ipc])           # fft of current  ROI
+    R = np.multiply(fftp, np.conj(fftc))    # complex cross product of ffts (conjugate on second)
+    r = np.fft.fftshift(np.fft.irfft2(R))   # shift zero freq to center
+    dxf, dyf = Centroid(np.abs(r),0)        # centroid shifted peak
+    dxf -= int(cxs/2)                       # shift from zero
+    dyf -= int(cys/2)
+    dxf /= (ipn-1)
+    dyf /= (ipn-1)
+
+  # compute centroid of correlations result to determine shift from origin between current and previous image
   x[ipc], y[ipc] = Centroid(corrc,0)
+  x[ipl], y[ipl] = Centroid(corrl,1)
+
+  # se t shift, integrated positions and time deltas
   dx = x[ipc] - x0        # shift from origin in X axis between previous and current ROI
   dy = y[ipc] - y0        # shift from origin in Y axis between previous and current ROI
   xi = xi + dx            # integrated shifts in X axis (motion in X)
   yi = yi + dy            # integrated shifts in Y axis (motion in Y)
   dt = tm[ipc] - tm[ipp]  # elapsed time between previous and current ROI
-
-  # compute correlation of oldest and current RIO and floor to lowest value
-  corrl = np.subtract(signal.correlate(roi[ipl], roi[ipc], mode='same', method='fft'), 0)
-  # compute centroid of correlation result to determine shift from origin between current and oldest image
-  x[ipl], y[ipl] = Centroid(corrl,1)
   dxl = (x[ipl] - x0) / (ipn-1)        # shift from origin in X axis between oldest and current ROI
   dyl = (y[ipl] - y0) / (ipn-1)        # shift from origin in Y axis between oldest and current ROI
   dtl = (tm[ipc] - tm[ipl]) / (ipn-1)  # elapsed time between oldest and current ROI
+
+  if (0):   # 3d surface plot to jpeg
+    X = np.arange(50,78,1)
+    Y = np.arange(50,78,1)
+    X, Y = np.meshgrid(X, Y)
+    fig, ex = plt.subplots(subplot_kw={"projection": "3d"})
+    arr = corrl[50:78,50:78]  # r[50:78,50:78]
+    ex.plot_surface(X, Y, arr, cmap='Purples')
+#   ex.set_zlim(15000000,25000000)
+    plt.savefig('peak{0}.jpg'.format(count))
+    plt.close(fig)
 
   if (debug):
     pathx.append(xi)
@@ -290,7 +362,6 @@ for n in range(0, 4*480): # approx 5 images per second - debugging/test phase of
     if (debug > 1):
       data = im.fromarray((corrl/np.max(corrl)*255).astype(np.uint8))
       data.save('corr{0}.jpg'.format(count))
-      count += 1
 
   # slow down process
   time.sleep(.1)
@@ -317,6 +388,7 @@ for n in range(0, 4*480): # approx 5 images per second - debugging/test phase of
     Status = 0      # local status, TODO
     ChkSum = 0
     buf = struct.pack('<IIIfffffffff',HB,HBSrv,Status,tm[ipc],dt,dtl,dx,dxl,dy,dyl,xi,yi)
+#   buf = struct.pack('<IIIfffffffff',HB,HBSrv,Status,tm[ipc],dt,dtl,dxf,dxl,dyf,dyl,xi,yi)
 #   buf = struct.pack('<IIIfffffffff',HB,HBSrv,Status,tm[ipc],dt,dtl,dx,dxl,dy,dyl,float(exp/1000),yi)
     for i in buf:
       ChkSum = ChkSum + i
@@ -335,6 +407,9 @@ for n in range(0, 4*480): # approx 5 images per second - debugging/test phase of
   ipl = ipc + 1   # oldest pipeline index
   if (ipl >= ipn): ipl = 0
 
+  if (debug):
+    count += 1
+
 # average flat frames (need to move this in loop above)
 if (ROIFFCnt > 0):
   roiff = roiff_ / ROIFFCnt
@@ -350,6 +425,7 @@ else:
 
 GPIO.output(LightPin, GPIO.LOW)   # shutoff light source
 GPIO.cleanup()
+cam.stop()
 
 # numpy debug graphs
 if (debug):
@@ -374,46 +450,33 @@ if (debug):
     plt.scatter(pathx,pathy,s=1)
     plt.axis((-400,400,-400,400))
 
-    X = np.arange(0,cxs,1)
-    Y = np.arange(0,cys,1)
-    X, Y = np.meshgrid(X, Y)
-    fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
-    ax.plot_surface(X, Y, roi[ipl], cmap='Purples')
-    ax.set_xlim(0,cxs)
-    ax.set_ylim(0,cys)
-    ax.set_zlim(0,255)
+    if (0):   # current ROI
+      X = np.arange(0,cxs,1)
+      Y = np.arange(0,cys,1)
+      X, Y = np.meshgrid(X, Y)
+      fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
+      ax.plot_surface(X, Y, roi[ipc], cmap='Purples')
+      ax.set_xlim(0,cxs)
+      ax.set_ylim(0,cys)
+      ax.set_zlim(0,255)
 
-    X = np.arange(0,cxs,1)
-    Y = np.arange(0,cys,1)
-    X, Y = np.meshgrid(X, Y)
+    x = np.arange(50,78,1)
+    y = np.arange(50,78,1)
+    X, Y = np.meshgrid(x, y)
     fig, bx = plt.subplots(subplot_kw={"projection": "3d"})
-    bx.plot_surface(X, Y, roiraw, cmap='Purples')
-    bx.set_xlim(0,cxs)
-    bx.set_ylim(0,cys)
-    bx.set_zlim(0,255)
+    bx.plot_surface(X, Y, corrl[50:78,50:78], cmap='Purples')
+    bx.set_xlim(50,78)
+    bx.set_ylim(50,78)
 
-    X = np.arange(0,cxs,1)
-    Y = np.arange(0,cys,1)
-    X, Y = np.meshgrid(X, Y)
-    fig, cx = plt.subplots(subplot_kw={"projection": "3d"})
-    cx.plot_surface(X, Y, roiff, cmap='Purples')
-    cx.set_xlim(0,cxs)
-    cx.set_ylim(0,cys)
-    cx.set_zlim(0,np.max(roiff))
-
-    X = np.arange(50,78,1)
-    Y = np.arange(50,78,1)
-    X, Y = np.meshgrid(X, Y)
-    fig, dx = plt.subplots(subplot_kw={"projection": "3d"})
-    corrlz = corrl[50:78,50:78]
-    dx.plot_surface(X, Y, corrlz, cmap='Purples')
-
-#   X = np.arange(50,78,1)
-#   Y = np.arange(50,78,1)
-#   X, Y = np.meshgrid(X, Y)
-#   fig, ex = plt.subplots(subplot_kw={"projection": "3d"})
-#   corr0z = corr0[50:78,50:78]
-#   ex.plot_surface(X, Y, corr0z, cmap='Purples')
+    if (0): # fft peak 3d surface plot
+      x = np.arange(50,78,1) #len(r),1)
+      y = np.arange(50,78,1) #len(r),1)
+      X, Y = np.meshgrid(x, y)
+      fig = plt.figure()
+      bx = fig.add_subplot(111, projection='3d')
+      bx.plot_surface(X, Y, np.abs(r[50:78,50:78]), cmap='Purples')
+      bx.set_xlim(50,78)
+      bx.set_ylim(50,78)
 
     plt.show()
 
