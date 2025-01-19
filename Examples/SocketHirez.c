@@ -47,6 +47,7 @@ int    SocketConnectedHirez[2] = {-1, -1}; // Socket connected
 extern int   ExitRequest;
 
 extern t_Motor Drive[]; //, FocusM;
+extern float ra_rat_f;
 
 t_SocketSrvHirez    SrvHirez[2];
 t_SocketDevHirez    DevHirez[2];
@@ -137,6 +138,7 @@ void SocketProcHirez0(void *ThreadNr)
 {
   static int Status;
   int HIREZ = HIREZ_RA;
+  int ScopeNum = 0;
 
   while (ThreadNr && *(int *)ThreadNr )
   {
@@ -186,7 +188,7 @@ void SocketProcHirez0(void *ThreadNr)
           DevHirezEthCommTimeout[HIREZ] = ETH_TIMEOUT;
       }
 
-      static int subTx = 0;  // Don't inundate slower client
+      static int subTx = 0;  // Don't flood slower client
       if (--subTx < 0)
       {
         subTx = 2;
@@ -196,6 +198,7 @@ void SocketProcHirez0(void *ThreadNr)
         SrvHirezLatency[HIREZ] = SrvHirez[HIREZ].HB - DevHirez[HIREZ].HBSrv;  // Latency
         if (SrvHirezLatency[HIREZ] < 0) SrvHirezLatency[HIREZ] += 256;
         if (SrvHirezLatency[HIREZ] > 5) DevHirezEthCommTimeout[HIREZ] = ETH_TIMEOUT;
+        SrvHirez[HIREZ].DriveRate = Drive[ScopeNum].Rate;
 
         // Chksum for data to device
         SrvHirez[HIREZ].ChkSum = 0;
@@ -210,29 +213,37 @@ void SocketProcHirez0(void *ThreadNr)
           Status = WSAGetLastError();
       }
 
+if (1)
+{
 //DSpare1 = (float)SrvHirezLatency[HIREZ];
-DSpare1 = (float)DevHirez[HIREZ].dt[0];
-//DSpare2 = (float)DevHirez[HIREZ].dx[0];
-DSpare3 = (float)DevHirez[HIREZ].dy[0];
+DSpare1 = (float)DevHirez[HIREZ].dt;
+DSpare2 = (float)DevHirez[HIREZ].dx;
+DSpare3 = (float)DevHirez[HIREZ].dy;
+DSpare4 = (float)DevHirez[HIREZ].xi;
+DSpare5 = (float)DevHirez[HIREZ].yi;
+DSpare6 = sqrtf((float)DevHirez[HIREZ].dx*(float)DevHirez[HIREZ].dx+(float)DevHirez[HIREZ].dy*(float)DevHirez[HIREZ].dy);
+DSpare7 = -DSpare6 * 9.16f;
+}
+else
+{
+//DSpare1 = (float)SrvHirezLatency[HIREZ];
+DSpare1 = (float)DevHirez[HIREZ].dt;
+DSpare2 = (float)DevHirez[HIREZ].dy;
+DSpare3 = (float)DevHirez[HIREZ].yi;
 
-DSpare5 = (float)DevHirez[HIREZ].dt[1];
-//DSpare6 = (float)DevHirez[HIREZ].dx[1];
-DSpare7 = (float)DevHirez[HIREZ].dy[1];
+#define PIX2ARCSEC 3.f/(4.75f*2.f*3.1415f*25.4f*1000.f/360.f/60.f/60.f*1.17f)
+DSpare4 = ((DevHirez[HIREZ].dt != 0.f) ? (DevHirez[HIREZ].dy/DevHirez[HIREZ].dt) : 0.f) * PIX2ARCSEC;
+DSpare5 = ((DevHirez[HIREZ].dt != 0.f) ? (DevHirez[HIREZ].dy/DevHirez[HIREZ].dt) : 0.f) * PIX2ARCSEC;
 
-#define PIX2ARCSEC 1.f/(4.75f*2.f*3.1415f*25.4f*1000.f/360.f/60.f/60.f*1.17f)
-DSpare4 = ((DevHirez[HIREZ].dt[0] != 0.f) ? (DevHirez[HIREZ].dy[0]/DevHirez[HIREZ].dt[0]) : 0.f) * PIX2ARCSEC;
-DSpare8 = ((DevHirez[HIREZ].dt[1] != 0.f) ? (DevHirez[HIREZ].dy[1]/DevHirez[HIREZ].dt[1]) : 0.f) * PIX2ARCSEC;
-
-//DSpare4 = (float)DevHirez[HIREZ].xi;
-//DSpare4 = (float)DevHirez[HIREZ].yi;
-#define ADJK (15.f/12.7f/.75f/1.07f)
+#define ADJK (15.f/18.f)
 extern double Ha;
 if (Drive[0].State == DRIVE_OFF)
 {
-  DSpare2 = (float)Ha - DSpare4 * PIX2ARCSEC / 3600.f * ADJK;
+  DSpare6 = (float)Ha - DSpare3 * PIX2ARCSEC / 3600.f * ADJK;
 }
-DSpare6 = DSpare2 + -DSpare4  * PIX2ARCSEC / 3600.f * ADJK;
-//DSpare5 = (float)Ha - DSpare6;
+DSpare7 = DSpare6 - DSpare3  * PIX2ARCSEC / 3600.f * ADJK;
+DSpare8 = (float)Ha - DSpare7;
+}
     }
     Sleep(SRV_PERIOD);
   }
@@ -313,7 +324,7 @@ void SocketProcHirez1(void *ThreadNr)
         ucptr++;
       }
 
-      static int subTx = 0;  // Don't inundate slower client
+      static int subTx = 0;  // Don't flood slower client
       if (--subTx < 0)
       {
         subTx = 5;

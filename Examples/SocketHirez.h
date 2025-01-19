@@ -23,6 +23,7 @@ typedef struct t_SocketSrvHirezstruct
 {
   int                 HB;
   t_SrvDevHirezStatus Status;
+  int                 DriveRate;
   unsigned int        ChkSum;
 } t_SocketSrvHirez;
 
@@ -32,9 +33,9 @@ typedef struct t_SocketDevHirezstruct
   int                 HBSrv;
   t_SrvDevHirezStatus Status;
   float               TimeStamp;
-  float               dt[2];
-  float               dx[2];
-  float               dy[2];
+  float               dt;
+  float               dx;
+  float               dy;
   float               xi;
   float               yi;
   unsigned int        ChkSum;
