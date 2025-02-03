@@ -90,8 +90,13 @@ def GetROI(Shift2Zero):
 # roi = img10b[cxo:cxo+cxs,cyo:cyo+cys].astype(float) - roib  #raw
 # roi = img[cxo:cxo+cxs,cyo:cyo+cys].astype(float) - roib  #raw
 
-  img = cam.capture_array("main")            # snap ROI for client
-  roi = img[:,:,1].astype(float) - roib  # main
+  # stack images to improve SNR
+  img1 = cam.capture_array("main")[:,:,1].astype(float)    # snap ROI for client
+  img2 = cam.capture_array("main")[:,:,1].astype(float)    # snap ROI for client
+  img3 = cam.capture_array("main")[:,:,1].astype(float)    # snap ROI for client
+# img4 = cam.capture_array("main")[:,:,1].astype(float)    # snap ROI for client
+# roi = (img1 + img2 + img3 + img4)/4 - roib               # average stack and remove background
+  roi = (img1 + img2 + img3)/3 - roib                      # average stack and remove background
   timestamp = cam.capture_metadata()["SensorTimestamp"]
 
   if (Shift2Zero): roi = np.clip((roi - DarkF), a_min=0, a_max=255)
@@ -283,7 +288,7 @@ t0 = time.perf_counter_ns();
 
 #################################################################################
 # START OF REAL TIME
-RunFramesToDo = 4*240
+RunFramesToDo = 4*720
 for n in range(0, RunFramesToDo):
   roi[ipc],tm[ipc] = GetROI(1)  # snap 'current' ROI
 
@@ -304,7 +309,7 @@ for n in range(0, RunFramesToDo):
       else:
         print('====== Flat Frame fail: mean, one or more pixels zero')
 
-  #roi[ipc] = np.multiply(roi[ipc], roiff)  # apply flat field - DO NOT MOVE above flat frame accumulator!
+# roi[ipc] = np.multiply(roi[ipc], roiff)  # apply flat field - DO NOT MOVE above flat frame accumulator!
 
   # METHOD 1: compute correlation (previous, current), (oldest, current) ROI
   # corrc = np.subtract(signal.correlate(roi[ipp], roi[ipc], mode='same', method='fft'), 0)
