@@ -50,7 +50,9 @@ import os
 
 os.environ['LIBCAMERA_LOG_LEVELS'] = '4'          # silence libcamera2
 
-debug = 2                                         # 1 is only graphs, 2 is graphs and jpg
+debug = 1                                         # 1 is only graphs, 2 is graphs and jpg
+RunFramesToDo = 4*2400                            # for loop frames to run (4/sec), will remove in final version
+TimeBetweenSamples = .25                          # time in seconds betwen samples, dependent on processor power and imager
 count = 0
 SpecklePosFlatFrame = 'SpecklePosFlatFrame.npy'   # flat fiel file name
 ipn = 5                                           # ROI pipeline depth
@@ -287,8 +289,7 @@ for n in range(0, ipn, 1):
 t0 = time.perf_counter_ns();
 
 #################################################################################
-# START OF REAL TIME
-RunFramesToDo = 4*720
+# START OF 'REAL' TIME
 for n in range(0, RunFramesToDo):
   roi[ipc],tm[ipc] = GetROI(1)  # snap 'current' ROI
 
@@ -387,7 +388,7 @@ for n in range(0, RunFramesToDo):
   if (debug): count += 1
 
   # waste time to achieve better determinism (pad to 0.25 sec)
-  TimeCorr = 0.25 - (time.perf_counter_ns() - t0) * ns2sec
+  TimeCorr = TimeBetweenSamples - (time.perf_counter_ns() - t0) * ns2sec
   if (TimeCorr > 0):
     Delay(TimeCorr * sec2us)
 
