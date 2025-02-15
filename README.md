@@ -1,6 +1,8 @@
 UNDER CONSTRUCTION 2025
 LOTS MORE TO COME - STAY TUNED
 
+Expanded storyline: https://watchobs.com/astronomy12.html
+
 Ultra fine 2 axis position sensing by lensless speckle imaging
 
 Initial design and code:
