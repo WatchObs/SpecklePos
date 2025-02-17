@@ -93,12 +93,12 @@ def GetROI(Shift2Zero):
 # roi = img[cxo:cxo+cxs,cyo:cyo+cys].astype(float) - roib  #raw
 
   # stack images to improve SNR
-  img1 = cam.capture_array("main")[:,:,1].astype(float)    # snap ROI for client
-  img2 = cam.capture_array("main")[:,:,1].astype(float)    # snap ROI for client
-  img3 = cam.capture_array("main")[:,:,1].astype(float)    # snap ROI for client
-# img4 = cam.capture_array("main")[:,:,1].astype(float)    # snap ROI for client
-# roi = (img1 + img2 + img3 + img4)/4 - roib               # average stack and remove background
-  roi = (img1 + img2 + img3)/3 - roib                      # average stack and remove background
+  stack = 3
+  roi = cam.capture_array("main")[:,:,1].astype(float)
+  for n in range(1,stack):
+    roi += cam.capture_array("main")[:,:,1].astype(float)
+  roi /= stack           # average stack
+  roi -= roib            # remove background
   timestamp = cam.capture_metadata()["SensorTimestamp"]
 
   if (Shift2Zero): roi = np.clip((roi - DarkF), a_min=0, a_max=255)
@@ -155,8 +155,6 @@ def SetExposure():
   global exp0
 
   for exp in range (10,60,5):                   # exposure range to test (in microseconds)
-    if (exp == 67):
-      continue
     cam.set_controls({"ExposureTime": exp})     # set camera exposure
     roi,_ = GetROI(0)                           # snap ROI at set exposure
     hist = ndimage.histogram(roi, min = 0, max = 255, bins = 256) # histogram pixel brightness in 16 bins over 8 bit
@@ -194,7 +192,7 @@ exp = exp0       # exposure in microseconds
 cam = Picamera2()
 modes = cam.sensor_modes
 cx,cy = cam.camera_properties['PixelArraySize']
-print("Camera native resolution: ",cx,"x",cy)
+#print("Camera native resolution: ",cx,"x",cy)
 cx  = 1280       # X pixel count TODO: get from camera
 cy  = 800        # Y pixle count
 cxo = int(cx/2)  # center of sensor
@@ -236,8 +234,8 @@ except:
 # Initialize ROIs & Correlator
 xi = 0          # Integrated center shifts
 yi = 0          # Integrated center shifts
-x0 = int(cxs/2) # ROI origin in sensor frame
-y0 = int(cys/2) # ROI origin in sensor frame
+x0 = int(cxs/2) # ROI center (origin)
+y0 = int(cys/2) # ROI center (origin)
 dt = 0          # delta x change between previous and current ROIs (seconds)
 dtl = 0         # delta time between ROI n and n-m (seconds)
 dx = 0          # delta y change between previous and current ROIs
@@ -310,7 +308,7 @@ for n in range(0, RunFramesToDo):
       else:
         print('====== Flat Frame fail: mean, one or more pixels zero')
 
-# roi[ipc] = np.multiply(roi[ipc], roiff)  # apply flat field - DO NOT MOVE above flat frame accumulator!
+  # roi[ipc] = np.multiply(roi[ipc], roiff)  # apply flat field - DO NOT MOVE above flat frame accumulator!
 
   # METHOD 1: compute correlation (previous, current), (oldest, current) ROI
   # corrc = np.subtract(signal.correlate(roi[ipp], roi[ipc], mode='same', method='fft'), 0)
@@ -339,7 +337,10 @@ for n in range(0, RunFramesToDo):
   # shift, error, diffphase = phase_cross_correlation(roi[ipl], roi[ipc], normalization='phase', upsample_factor=100)
 
   # METHOD 4: optical flow (vectors)
+  t1 = time.perf_counter_ns()
   Vx, Vy = optical_flow_ilk(roi[ipl], roi[ipc], radius=4, gaussian=False, prefilter=False)
+  t2 = time.perf_counter_ns()
+  oftime = (t2-t1)/1000000
   dx = np.mean(Vx)
   dy = np.mean(Vy)
   Vmag = math.sqrt(dx**2 + dy**2)
@@ -349,7 +350,7 @@ for n in range(0, RunFramesToDo):
   yi = yi + dy                       # integrated shifts in Y axis (motion in Y)
   dt = (tm[ipc] - tm[ipl]) * ns2sec  # elapsed time between previous and current ROI
 
-  if (debug): print ('dt:{:6.3f} dx:{:6.3f} dy:{:6.3f}'.format(dt, dx, dy))
+  if (debug): print ('{:5d} - oft:{:6.3f} dt:{:6.3f} dx:{:6.3f} dy:{:6.3f}'.format(count, oftime, dt, dx, dy))
 
   # Handle server/client traffic
   if (SrvSocketActive):
@@ -382,7 +383,7 @@ for n in range(0, RunFramesToDo):
   ipp  = ipc               # previous pipeline index
   ipc += 1                 # current  pipeline index
   if (ipc >= ipn): ipc = 0 # fold back to start if at end of pipeline
-  ipl += 1                 # oldest pipeline index
+  ipl  = ipc + 1           # oldest pipeline index
   if (ipl >= ipn): ipl = 0 # fold back to start if at end of pipeline
 
   if (debug): count += 1
