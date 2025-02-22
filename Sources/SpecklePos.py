@@ -35,6 +35,8 @@ import RPi.GPIO as GPIO
 import math
 import numpy as np
 import matplotlib.pyplot as plt
+import cv2 as cv
+#import argparse
 import struct
 from PIL import Image as im
 from picamera2 import Picamera2
@@ -337,10 +339,28 @@ for n in range(0, RunFramesToDo):
   # shift, error, diffphase = phase_cross_correlation(roi[ipl], roi[ipc], normalization='phase', upsample_factor=100)
 
   # METHOD 4: optical flow (vectors)
+  #t1 = time.perf_counter_ns()
+  #Vx, Vy = optical_flow_ilk(roi[ipl], roi[ipc], radius=4, gaussian=False, prefilter=False)
+  #t2 = time.perf_counter_ns()
+  #oftime = (t2-t1)/1000000
+  #dx = np.mean(Vx)
+  #dy = np.mean(Vy)
+  #Vmag = math.sqrt(dx**2 + dy**2)
+
+  # opencv optical flow
+#  lk_params = dict( winSize  = (15, 15), maxLevel = 2, criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10, 0.03))
+#  feature_params = dict( maxCorners = 100, qualityLevel = 0.3, minDistance = 7, blockSize = 7 )
+#  p0 = cv.goodFeaturesToTrack(roi[ipl], mask = None, **feature_params)
+#  p1, st, err = cv.calcOpticalFlowPyrLK(roi[ipl], roi[ipc], p0, None, **lk_params)
   t1 = time.perf_counter_ns()
-  Vx, Vy = optical_flow_ilk(roi[ipl], roi[ipc], radius=4, gaussian=False, prefilter=False)
+  flow = cv.calcOpticalFlowFarneback(roi[ipl], roi[ipc], None, 0.5, 3, 15, 3, 5, 1.2, 0)
   t2 = time.perf_counter_ns()
   oftime = (t2-t1)/1000000
+  #mag, ang = cv.cartToPolar(flow[...,0], flow[...,1])
+  #Vmag = np.mean(mag)
+  Vx = flow[...,0]
+  Vy = flow[...,1]
+  #mag, ang = cv.cartToPolar(flow[...,0], flow[...,1])
   dx = np.mean(Vx)
   dy = np.mean(Vy)
   Vmag = math.sqrt(dx**2 + dy**2)
@@ -350,7 +370,7 @@ for n in range(0, RunFramesToDo):
   yi = yi + dy                       # integrated shifts in Y axis (motion in Y)
   dt = (tm[ipc] - tm[ipl]) * ns2sec  # elapsed time between previous and current ROI
 
-  if (debug): print ('{:5d} - oft:{:6.3f} dt:{:6.3f} dx:{:6.3f} dy:{:6.3f}'.format(count, oftime, dt, dx, dy))
+  if (debug): print ('{:5d} - oft:{:6.3f} dt:{:6.3f} dx:{:6.3f} dy:{:6.3f} Vmag:{:6.3f}'.format(count, oftime, dt, dx, dy, Vmag))
 
   # Handle server/client traffic
   if (SrvSocketActive):
