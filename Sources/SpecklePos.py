@@ -35,19 +35,19 @@ import RPi.GPIO as GPIO
 import math
 import numpy as np
 import matplotlib.pyplot as plt
-import cv2 as cv
-#import argparse
 import struct
 from PIL import Image as im
 from picamera2 import Picamera2
 from socket import socket, AF_INET, SOCK_DGRAM
 from scipy import signal
 from scipy import ndimage
-from skimage.registration import phase_cross_correlation
-from skimage.registration._phase_cross_correlation import _upsampled_dft
-from scipy.ndimage import fourier_shift
-from skimage.registration import optical_flow_tvl1, optical_flow_ilk
-
+import argparse
+import cv2
+#from cv2 import calcOpticalFlowFarneback
+#from skimage.registration import phase_cross_correlation
+#from skimage.registration import optical_flow_tvl1, optical_flow_ilk
+#from skimage.registration._phase_cross_correlation import _upsampled_dft
+#from scipy.ndimage import fourier_shift
 import os
 
 os.environ['LIBCAMERA_LOG_LEVELS'] = '4'          # silence libcamera2
@@ -65,6 +65,9 @@ roib  = np.zeros((cxs,cys), dtype=float)          # ROI background
 roiff = np.ones((cxs,cys), dtype=float)           # ROI flat field
 roiff_= np.ones((cxs,cys), dtype=float)           # ROI flat field accumulator
 roix  = np.zeros((cxs,cys), dtype=float)          # ROI scratch pad
+dx    = np.empty(shape=2, dtype=float)                 # shift in x between selected two images
+dy    = np.empty(shape=2, dtype=float)                 # shift in y between selected two images
+dt    = np.empty(shape=2, dtype=float)                 # time between selected two images
 DarkF = 0                                         # 'dark field' as it were, to increase CM estimate quality
 x = [0]*ipn                                       # ROI pipeline center shift in X
 y = [0]*ipn                                       # ROI pipeline center shift in Y
@@ -234,16 +237,9 @@ except:
   SrvSocketActive = 0
 
 # Initialize ROIs & Correlator
-xi = 0          # Integrated center shifts
-yi = 0          # Integrated center shifts
 x0 = int(cxs/2) # ROI center (origin)
 y0 = int(cys/2) # ROI center (origin)
-dt = 0          # delta x change between previous and current ROIs (seconds)
 dtl = 0         # delta time between ROI n and n-m (seconds)
-dx = 0          # delta y change between previous and current ROIs
-dy = 0          # delta time between previous and current ROIs
-dxl = 0         # delta x change between ROI n and n-m
-dyl = 0         # delta y change between ROI n and n-m
 HB = 0          # local socket data checksum
 HBSrv = 0       # server socket data checksum
 RateSrv = 0     # server motor rate
@@ -338,7 +334,7 @@ for n in range(0, RunFramesToDo):
   # METHOD 3: phase cross correlationmask = corrupted_pixels
   # shift, error, diffphase = phase_cross_correlation(roi[ipl], roi[ipc], normalization='phase', upsample_factor=100)
 
-  # METHOD 4: optical flow (vectors)
+  # METHOD 4: optical flow with Scikit-image
   #t1 = time.perf_counter_ns()
   #Vx, Vy = optical_flow_ilk(roi[ipl], roi[ipc], radius=4, gaussian=False, prefilter=False)
   #t2 = time.perf_counter_ns()
@@ -347,30 +343,29 @@ for n in range(0, RunFramesToDo):
   #dy = np.mean(Vy)
   #Vmag = math.sqrt(dx**2 + dy**2)
 
-  # opencv optical flow
-#  lk_params = dict( winSize  = (15, 15), maxLevel = 2, criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10, 0.03))
-#  feature_params = dict( maxCorners = 100, qualityLevel = 0.3, minDistance = 7, blockSize = 7 )
-#  p0 = cv.goodFeaturesToTrack(roi[ipl], mask = None, **feature_params)
-#  p1, st, err = cv.calcOpticalFlowPyrLK(roi[ipl], roi[ipc], p0, None, **lk_params)
+  # METHOD 5: optical flow with OpenCV
+  #cv2.calcOpticalFlowFarneback(prev, next, pyr_scale, levels, winsize, iterations, poly_n, poly_sigma, flags[, flow])
+  #mag, ang = cv.cartToPolar(flow[...,0], flow[...,1])
   t1 = time.perf_counter_ns()
-  flow = cv.calcOpticalFlowFarneback(roi[ipl], roi[ipc], None, 0.5, 3, 15, 3, 5, 1.2, 0)
+  # 1 frame flow (fast)
+  flow = cv2.calcOpticalFlowFarneback(roi[ipp], roi[ipc], None, 0.5, 3, 15, 3, 5, 1.2, 0)
+  Vy = flow[...,0]
+  Vx = flow[...,1]
+  dx[0] = np.mean(Vx)
+  dy[0] = np.mean(Vy)
+  dt[0] = (tm[ipc] - tm[ipp]) * ns2sec  # elapsed time between oldest   and current ROI
+  # 4 frame flow
+  flow = cv2.calcOpticalFlowFarneback(roi[ipl], roi[ipc], None, 0.5, 3, 15, 3, 5, 1.2, 0)
+  Vy = flow[...,0]
+  Vx = flow[...,1]
+  dx[1] = np.mean(Vx)
+  dy[1] = np.mean(Vy)
+  Vmag = math.sqrt(dx[1]**2 + dy[1]**2)
+  dt[1] = (tm[ipc] - tm[ipl]) * ns2sec  # elapsed time between previous and current ROI
   t2 = time.perf_counter_ns()
   oftime = (t2-t1)/1000000
-  #mag, ang = cv.cartToPolar(flow[...,0], flow[...,1])
-  #Vmag = np.mean(mag)
-  Vx = flow[...,0]
-  Vy = flow[...,1]
-  #mag, ang = cv.cartToPolar(flow[...,0], flow[...,1])
-  dx = np.mean(Vx)
-  dy = np.mean(Vy)
-  Vmag = math.sqrt(dx**2 + dy**2)
 
-  # set shift, integrated positions and time deltas
-  xi = xi + dx                       # integrated shifts in X axis (motion in X)
-  yi = yi + dy                       # integrated shifts in Y axis (motion in Y)
-  dt = (tm[ipc] - tm[ipl]) * ns2sec  # elapsed time between previous and current ROI
-
-  if (debug): print ('{:5d} - oft:{:6.3f} dt:{:6.3f} dx:{:6.3f} dy:{:6.3f} Vmag:{:6.3f}'.format(count, oftime, dt, dx, dy, Vmag))
+  if (debug): print ('{:5d} - oft:{:6.3f} dt1:{:6.3f} dx1:{:6.3f} dy1:{:6.3f} Vmag:{:6.3f}'.format(count, oftime, dt[1], dx[1], dy[1], Vmag))
 
   # Handle server/client traffic
   if (SrvSocketActive):
@@ -393,7 +388,7 @@ for n in range(0, RunFramesToDo):
     # Data to send
     Status = 0      # local status, TODO
     ChkSum = 0
-    buf = struct.pack('<IIIffffff',HB,HBSrv,Status,tm[ipc],dt,dx,dy,xi,yi)
+    buf = struct.pack('<IIIfffffff',HB,HBSrv,Status,tm[ipc],dt[0],dt[1],dx[0],dx[1],dy[0],dy[1])
     for i in buf:
       ChkSum = ChkSum + i
     buf = buf[:len(buf)] + struct.pack('<I',ChkSum)
