@@ -1,14 +1,15 @@
 #!/usr/bin/python3
 #
 # WatchObservatory.com - Andre Germain Feb 2025 - GPL licensing
-# You must credit the above for conception of speckle position sensing for telescopes, and this software
+# Credit the above for conception of speckle position sensing for telescopes, and this software
 #
 # ROI: region of interest, or subset of the sensor for faster download and computation.
 # ROI only needs to be so large to encompass sufficient speckle patterns.
 #
 # Requirements:
-#  O/S Bookworm or later
+#  O/S Bookworm
 #  libcamera2
+#  OpenCV
 #  Rpi4 or Zero2W
 #
 # With OV9281 3rd party camera:
@@ -65,9 +66,9 @@ roib  = np.zeros((cxs,cys), dtype=float)          # ROI background
 roiff = np.ones((cxs,cys), dtype=float)           # ROI flat field
 roiff_= np.ones((cxs,cys), dtype=float)           # ROI flat field accumulator
 roix  = np.zeros((cxs,cys), dtype=float)          # ROI scratch pad
-dx    = np.empty(shape=2, dtype=float)                 # shift in x between selected two images
-dy    = np.empty(shape=2, dtype=float)                 # shift in y between selected two images
-dt    = np.empty(shape=2, dtype=float)                 # time between selected two images
+dx    = np.empty(shape=2, dtype=float)            # shift in x between selected two images
+dy    = np.empty(shape=2, dtype=float)            # shift in y between selected two images
+dt    = np.empty(shape=2, dtype=float)            # time between selected two images
 DarkF = 0                                         # 'dark field' as it were, to increase CM estimate quality
 x = [0]*ipn                                       # ROI pipeline center shift in X
 y = [0]*ipn                                       # ROI pipeline center shift in Y
