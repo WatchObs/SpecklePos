@@ -14,7 +14,7 @@
 #
 # With OV9281 3rd party camera:
 #  a) set default driver by adding dtoverlay=ov9281 in config.txt with the following,
-#     sudo nano /boot/config.txt
+#     sudo nano /boot/firmware/config.txt
 #  b) Timeout may occur. Add the following line in rpi_apps.yaml using the command below it:
 #     "camera_timeout_value_ms":    5000000,
 #     sudo nano /usr/share/libcamera/pipeline/rpi/vc4/rpi_apps.yaml
@@ -54,7 +54,7 @@ import os
 os.environ['LIBCAMERA_LOG_LEVELS'] = '4'          # silence libcamera2
 
 debug = 1                                         # 1 is only graphs, 2 is graphs and jpg
-RunFramesToDo = 4*2400                            # for loop frames to run (4/sec), will remove in final version
+RunFramesToDo = 4*240*5                          # for loop frames to run (4/sec), will remove in final version
 TimeBetweenSamples = .25                          # time in seconds betwen samples, dependent on processor power and imager
 count = 0
 SpecklePosFlatFrame = 'SpecklePosFlatFrame.npy'   # flat fiel file name
@@ -157,27 +157,27 @@ def Centroid(roi, sel):
 # adjust exposure before tracking
 def SetExposure():
   global DarkF
-  global exp
-  global exp0
 
-  for exp in range (10,60,5):                   # exposure range to test (in microseconds)
-    cam.set_controls({"ExposureTime": exp})     # set camera exposure
-    roi,_ = GetROI(0)                           # snap ROI at set exposure
+  exp = 7
+  for n in range (1,50,1):                       # exposure loop
+    cam.set_controls({"ExposureTime": int(exp)}) # set camera exposure (microseconds)
+    roi,_ = GetROI(0)                            # snap ROI at set exposure
     hist = ndimage.histogram(roi, min = 0, max = 255, bins = 256) # histogram pixel brightness in 16 bins over 8 bit
-    MxIdx = np.max(np.nonzero(hist))            # locate highest non empty bin (threshold to avoid hot pixels)
-    MnIdx = np.min(np.nonzero(hist))            # locate lowest  non empty bin (threshold to avoid hot pixels)
+    MxIdx = np.max(np.nonzero(hist))             # locate highest non empty bin (threshold to avoid hot pixels)
+    MnIdx = np.min(np.nonzero(hist))             # locate lowest  non empty bin (threshold to avoid hot pixels)
     time.sleep(.1)
     if (MxIdx == 255):
        print('break:   {:.2f} uS index low/high {:3d}/{:3d}'.format(exp, MnIdx, MxIdx))
        break
-    elif (MxIdx < 240):                         # latch exposure
+    elif (MxIdx < 240):                          # latch exposure
       exp0 = exp
       print('less240: {:.2f} uS index low/high {:3d}/{:3d}'.format(exp, MnIdx, MxIdx))
     else:
       print('240-255: {:.2f} uS index low/high {:3d}/{:3d}'.format(exp, MnIdx, MxIdx))
+    exp *= 1.3
 
   # snap final image at target exposure and extract histogram for bias
-  cam.set_controls({"ExposureTime": exp0})     # set camera exposure
+  cam.set_controls({"ExposureTime": int(exp0)})  # set camera exposure
   print('auto exposure: {:.2f} uS index low/high {:3d}/{:3d}'.format(exp0, MnIdx, MxIdx))
   return int(exp0)
 
@@ -198,11 +198,9 @@ exp = exp0       # exposure in microseconds
 cam = Picamera2()
 modes = cam.sensor_modes
 cx,cy = cam.camera_properties['PixelArraySize']
-#print("Camera native resolution: ",cx,"x",cy)
-cx  = 1280       # X pixel count TODO: get from camera
-cy  = 800        # Y pixle count
-cxo = int(cx/2)  # center of sensor
-cyo = int(cy/2)  # "
+print("Camera native resolution: ",cx,"x",cy)
+cxo = int((cx-cxs)/2)  # edge of ROI from center of sensor
+cyo = int((cy-cys)/2)  # edge of ROI from center of sensor
 #cam.still_configuration.enable_raw()
 #cam.still_configuration.main.size = (cxs, cys)
 #cam.still_configuration.queue = False;
