@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+#!/usr/bin/python3
 #
 # WatchObservatory.com - Andre Germain Feb 2025 - GPL licensing
 # Credit the above for conception of speckle position sensing for telescopes, and this software
@@ -54,8 +55,9 @@ import os
 os.environ['LIBCAMERA_LOG_LEVELS'] = '4'          # silence libcamera2
 
 debug = 1                                         # 1 is only graphs, 2 is graphs and jpg
-RunFramesToDo = 4*240*5                          # for loop frames to run (4/sec), will remove in final version
+RunFramesToDo = 20 #4*240*5                          # for loop frames to run (4/sec), will remove in final version
 TimeBetweenSamples = .25                          # time in seconds betwen samples, dependent on processor power and imager
+LightPin=12                                       # Monochromatic light power source
 count = 0
 SpecklePosFlatFrame = 'SpecklePosFlatFrame.npy'   # flat fiel file name
 ipn = 5                                           # ROI pipeline depth
@@ -92,24 +94,43 @@ def GetROI(Shift2Zero):
   global roib
   global count
 
-# img10b = (img[:, 0::5] << 2) | (img[:, 1::5] >> 6)
-# when camera does not support ROI, so full frame ROI array extract
-# roi = img[:,:,1][cxo:cxo+cxs,cyo:cyo+cys].astype(float) - roib  # main
-# roi = img10b[cxo:cxo+cxs,cyo:cyo+cys].astype(float) - roib  #raw
-# roi = img[cxo:cxo+cxs,cyo:cyo+cys].astype(float) - roib  #raw
+  img = cam.capture_array("main")[:,:,1].astype(float)  # monochrome sensor (RGB are duplicates)
+  roi = img[cxo:cxo+cxs,cyo:cyo+cys] - roib  # Monochrome sensor (ROI not supported)
 
   # stack images to improve SNR
-  stack = 3
-  roi = cam.capture_array("main")[:,:,1].astype(float)
-  for n in range(1,stack):
-    roi += cam.capture_array("main")[:,:,1].astype(float)
-  roi /= stack           # average stack
-  roi -= roib            # remove background
-  timestamp = cam.capture_metadata()["SensorTimestamp"]
+# stack = 3
+# img = cam.capture_array("main").astype(float)
+# for n in range(1,stack):
+#   img += cam.capture_array("main").astype(float)
 
+# roi = img[:,:,1] / stack     # pick green channel when using green laser, take stack average
+
+# r = img[:,:,2].astype(float)
+# g = img[:,:,1].astype(float)
+# b = img[:,:,0].astype(float)
+# roi = (r * (1/.12) + g + b * (1/.28))/1 - roib  # from IMX219 freqency response graph
   if (Shift2Zero): roi = np.clip((roi - DarkF), a_min=0, a_max=255)
 
+  timestamp = cam.capture_metadata()["SensorTimestamp"]
+
   return roi, timestamp
+
+#  t0 = time.perf_counter_ns();
+# img10b = (img[:, 0::5] << 2) | (img[:, 1::5] >> 6)
+# roi = img10b[cxo:cxo+cxs,cyo:cyo+cys].astype(float) - roib  #raw
+#  img16 = cam.capture_array("raw").view(np.uint16)
+#  print("raw 12 ",img12.shape)
+#  img16 = img12 * 16
+#  print("raw 16 ",img16.shape)
+#  imgrgb = cv2.cvtColor(img16, cv2.COLOR_BAYER_BG2BGR)
+#  print("rgb    ", imgrgb.shape)
+#  imggry = cv2.cvtColor(imgrgb, cv2.COLOR_RGB2GRAY)
+#  print("gray   ",roi.shape)
+#  timestamp = cam.capture_metadata()["SensorTimestamp"]
+#  return roi.astype(float), timestamp
+#  t1 = time.perf_counter_ns();
+#  print("Image capture + convert (ms)", (t1-t0)/1000000);
+#  return imggry, timestamp
 
 # procedure to detect correlation peak and its centroid
 def Centroid(roi, sel):
@@ -158,23 +179,24 @@ def Centroid(roi, sel):
 def SetExposure():
   global DarkF
 
+  exp0 = 7
   exp = 7
   for n in range (1,50,1):                       # exposure loop
     cam.set_controls({"ExposureTime": int(exp)}) # set camera exposure (microseconds)
     roi,_ = GetROI(0)                            # snap ROI at set exposure
     hist = ndimage.histogram(roi, min = 0, max = 255, bins = 256) # histogram pixel brightness in 16 bins over 8 bit
-    MxIdx = np.max(np.nonzero(hist))             # locate highest non empty bin (threshold to avoid hot pixels)
+    MxIdx = np.max(np.nonzero(hist>5))           # locate highest non empty bin (threshold to avoid hot pixels and outliers)
     MnIdx = np.min(np.nonzero(hist))             # locate lowest  non empty bin (threshold to avoid hot pixels)
     time.sleep(.1)
     if (MxIdx == 255):
        print('break:   {:.2f} uS index low/high {:3d}/{:3d}'.format(exp, MnIdx, MxIdx))
        break
-    elif (MxIdx < 240):                          # latch exposure
+    elif (MxIdx < 220):                          # latch exposure
       exp0 = exp
-      print('less240: {:.2f} uS index low/high {:3d}/{:3d}'.format(exp, MnIdx, MxIdx))
+      print('less220: {:.2f} uS index low/high {:3d}/{:3d}'.format(exp, MnIdx, MxIdx))
     else:
-      print('240-255: {:.2f} uS index low/high {:3d}/{:3d}'.format(exp, MnIdx, MxIdx))
-    exp *= 1.3
+      print('220-255: {:.2f} uS index low/high {:3d}/{:3d}'.format(exp, MnIdx, MxIdx))
+    exp *= 1.5
 
   # snap final image at target exposure and extract histogram for bias
   cam.set_controls({"ExposureTime": int(exp0)})  # set camera exposure
@@ -183,7 +205,7 @@ def SetExposure():
 
 # compute bias via histogram
 def GetBias(roi):
-  hist = ndimage.histogram(roi, min = 0, max = 255, bins = 256) # histogram pixel brightness in 16 bins over 8 bit
+  hist  = ndimage.histogram(roi, min = 0, max = 255, bins = 256) # histogram pixel brightness in 16 bins over 8 bit
   MxIdx = np.max(np.nonzero(hist))             # locate highest non empty bin
   MnIdx = np.min(np.nonzero(hist))             # locate lowest  non empty bin
   bias  = int((MxIdx - MnIdx)/3 + MnIdx)       # lower cutoff (dark) for further imaging - portion of family
@@ -197,6 +219,9 @@ exp0 = 7         # default exposure in microseconds
 exp = exp0       # exposure in microseconds
 cam = Picamera2()
 modes = cam.sensor_modes
+if (0):
+  for i, mode in enumerate(modes):
+    print(f"  Mode {i+1}: {mode}")
 cx,cy = cam.camera_properties['PixelArraySize']
 print("Camera native resolution: ",cx,"x",cy)
 cxo = int((cx-cxs)/2)  # edge of ROI from center of sensor
@@ -205,11 +230,13 @@ cyo = int((cy-cys)/2)  # edge of ROI from center of sensor
 #cam.still_configuration.main.size = (cxs, cys)
 #cam.still_configuration.queue = False;
 #cam.configure(cam.create_still_configuration())
-camconfig = cam.create_still_configuration(main={'size': (cxs,cys)}, queue=False)   # size same as ROI
-#camconfig = cam.create_still_configuration(raw={'size': (cxs,cys),'format': 'R8'}, queue=False)
+#camconfig = cam.create_still_configuration(main={'size': (cxs,cys)}, queue=False)   # size same as ROI Colour sensor
+camconfig = cam.create_still_configuration(main={'size': (cx,cy)}, queue=False)   # Mono sensor - ROI not supported
+#camconfig = cam.create_still_configuration(raw={'format': "SRGGB12", 'size': (cxs,cys)}, queue=False,)
 cam.configure(camconfig)
 crop = (cxo, cyo, cxs, cys)
-cam.set_controls({"AeEnable": False, "ExposureTime": exp0, "AnalogueGain": 1.0, "NoiseReductionMode": False, "ScalerCrop": crop})
+#cam.set_controls({"AeEnable": False, "ExposureTime": exp0, "AnalogueGain": 1.0, "NoiseReductionMode": False, "ScalerCrop": crop}) # Colour sensor - ROI supported
+cam.set_controls({"AeEnable": False, "ExposureTime": exp0, "AnalogueGain": 1.0, "NoiseReductionMode": False})   # Mono sensor - ROI not supported
 cam.start()
 
 # load flat frame data
@@ -251,7 +278,6 @@ ipl = 2         # oldest   image pipeline index
 #win2d = np.sqrt(np.outer(win1d, win1d))
 
 # set light source control
-LightPin=12
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(LightPin, GPIO.OUT)
 
@@ -259,6 +285,7 @@ GPIO.setup(LightPin, GPIO.OUT)
 GPIO.output(LightPin, GPIO.HIGH) # light source on
 time.sleep(.25)                  # wait for light source to stabilize
 exp = SetExposure()              # adjust exposure
+#exp = 700
 
 # switch off light source to sample background frame (roib)
 GPIO.output(LightPin, GPIO.LOW)  # light source off
@@ -266,7 +293,7 @@ time.sleep(.25)                  # wait for light source to stabilize
 bn = 25
 for n in range (0, bn+1, 1):
   roix = np.add(roix, GetROI(0)[0])
-roib = roix / bn                 # average ROI background
+roib = roix / bn                # average ROI background
 
 # switch on light source for position sensing
 GPIO.output(LightPin, GPIO.HIGH) # light source on
@@ -443,7 +470,7 @@ if (debug):
 
   Vm = np.sqrt(np.square(Vx) + np.square(Vy))
   print('Mean vector magnitude: {:3f}'.format(np.mean(Vm)))
-  VRange = 5   # pixel range on X ax
+  VRange = 10   # pixel range on X ax
   VBins = 100
   VmHist = ndimage.histogram(Vm,min=0,max=VRange,bins=VBins)
   plt.subplot(2,2,4)
