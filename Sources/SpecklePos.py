@@ -55,8 +55,8 @@ import os
 os.environ['LIBCAMERA_LOG_LEVELS'] = '4'          # silence libcamera2
 
 debug = 1                                         # 1 is only graphs, 2 is graphs and jpg
-RunFramesToDo = 20 #4*240*5                          # for loop frames to run (4/sec), will remove in final version
-TimeBetweenSamples = .25                          # time in seconds betwen samples, dependent on processor power and imager
+RunFramesToDo = 4*240*10                          # for loop frames to run (x/sec), will remove in final version
+TimeBetweenSamples = .2                           # time in seconds betwen samples, dependent on processor power and imager
 LightPin=12                                       # Monochromatic light power source
 count = 0
 SpecklePosFlatFrame = 'SpecklePosFlatFrame.npy'   # flat fiel file name
@@ -94,15 +94,16 @@ def GetROI(Shift2Zero):
   global roib
   global count
 
-  img = cam.capture_array("main")[:,:,1].astype(float)  # monochrome sensor (RGB are duplicates)
-  roi = img[cxo:cxo+cxs,cyo:cyo+cys] - roib  # Monochrome sensor (ROI not supported)
 
   # stack images to improve SNR
-# stack = 3
-# img = cam.capture_array("main").astype(float)
-# for n in range(1,stack):
-#   img += cam.capture_array("main").astype(float)
+  stack = 3
+# img = cam.capture_array("main").astype(float)         # Colour sensor
+  img = cam.capture_array("main")[:,:,1].astype(float)  # Monochrome sensor (RGB are duplicates)
+  for n in range(1,stack):
+#   img += cam.capture_array("main").astype(float)        # Colour sensor
+    img += cam.capture_array("main")[:,:,1].astype(float)  # Monochrome sensor (RGB are duplicates)
 
+  roi = img[cxo:cxo+cxs,cyo:cyo+cys] / stack - roib  # Monochrome sensor (ROI not supported)
 # roi = img[:,:,1] / stack     # pick green channel when using green laser, take stack average
 
 # r = img[:,:,2].astype(float)
