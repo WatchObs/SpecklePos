@@ -20,3 +20,5 @@ In the test carried out on the Ritchey Chretien 16" telescope, a 10" gear was us
 
 ![image](https://github.com/user-attachments/assets/c5438a07-181f-4da7-8e00-7d4fd7031368)
 ![SpecklePosOnRC16Test](https://github.com/user-attachments/assets/6a2c5a76-77ae-48e5-a86d-81cae0100f35)
+![My Image](Sources/SpecklePosHousing.jpg)
+
