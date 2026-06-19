@@ -32,10 +32,13 @@
 # light source is controlled via GPIO library
 
 import time
+import subprocess
 from subprocess import Popen, PIPE
 import RPi.GPIO as GPIO
 import math
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import struct
 from PIL import Image as im
@@ -55,13 +58,13 @@ import os
 os.environ['LIBCAMERA_LOG_LEVELS'] = '4'          # silence libcamera2
 
 debug = 1                                         # 1 is only graphs, 2 is graphs and jpg
-RunFramesToDo = 4*240*10                          # for loop frames to run (x/sec), will remove in final version
+RunFramesToDo = 5*20                              # for loop frames to run (x/sec), will remove in final version
 TimeBetweenSamples = .2                           # time in seconds betwen samples, dependent on processor power and imager
 LightPin=12                                       # Monochromatic light power source
 count = 0
 SpecklePosFlatFrame = 'SpecklePosFlatFrame.npy'   # flat fiel file name
 ipn = 5                                           # ROI pipeline depth
-cxs = 64                                          # ROI pixel size (NOTE: use power of 2 for FFT correlator)
+cxs = 128                                         # ROI pixel size (NOTE: use power of 2 for FFT correlator)
 cys = cxs                                         # " (must same as cxs for fft)
 roi   = [np.zeros((cxs,cys), dtype=float)] * ipn  # ROI pipeline
 roib  = np.zeros((cxs,cys), dtype=float)          # ROI background
@@ -93,7 +96,6 @@ def GetROI(Shift2Zero):
   global DarkF
   global roib
   global count
-
 
   # stack images to improve SNR
   stack = 3
@@ -212,8 +214,31 @@ def GetBias(roi):
   bias  = int((MxIdx - MnIdx)/3 + MnIdx)       # lower cutoff (dark) for further imaging - portion of family
   return int(bias)
 
+def get_serial():
+  try:
+    out = subprocess.check_output("cat /proc/cpuinfo | grep Serial", shell=True)
+    serial = out.decode().strip().split(":")[1].strip()
+    return serial
+  except:
+    return "0000000000000000"
+
 ###############################################################################################
 # START OF PROGRAM
+
+# Sniff out device
+serial = get_serial()
+
+if serial == "00000000a67c8d1e":
+  OBS_NAME = "RC16"
+  UDP_PORT = 50022  # RC16 RA
+elif serial == "10000000fedcba34":
+  OBS_NAME = "C14"
+  UDP_PORT = 50020  # C14 RA
+else:
+  OBS_NAME = "Unknown"
+  UDP_PORT = 50022  # fallback or test mode
+
+print(f"Running {OBS_NAME} (serial {serial}), UDP port:", UDP_PORT)
 
 # Initialize camera
 exp0 = 7         # default exposure in microseconds
@@ -446,6 +471,7 @@ cam.stop()
 #      data = im.fromarray(roi.astype(np.uint8)*2)
 #      data.save('speckle{0}.jpg'.format(count))
 if (debug):
+  plt.figure(figsize=(10,8))
   plt.subplots_adjust(hspace=.5)
 
   plt.subplot(2,2,1)
@@ -462,7 +488,8 @@ if (debug):
   u_ = Vy[::step, ::step]
   v_ = Vx[::step, ::step]
   plt.quiver(x, y, u_, v_, cmap='gray', color='y', units='dots', angles='xy', scale_units='xy', lw=5)
-  plt.imshow(norm)
+  plt.imshow(norm, cmap='gray', alpha=0.5)
+##plt.imshow(norm)
 
   plt.subplot(2,2,3)
   plt.title("intensity histogram")
@@ -503,7 +530,11 @@ if (debug):
     bx.set_xlim(px1,px2)
     bx.set_ylim(py1,py2)
 
-  plt.show()
+  plt.savefig(f"Graphs.png", dpi=150)
+  plt.clf()
+  plt.close()
+
+##plt.show()
   #plt.savefig('speckle{0}.jpg'.format(n))
   #plt.clf()
 
