@@ -1,5 +1,4 @@
 #!/usr/bin/python3
-#!/usr/bin/python3
 #
 # WatchObservatory.com - Andre Germain Feb 2025 - GPL licensing
 # Credit the above for conception of speckle position sensing for telescopes, and this software
@@ -58,13 +57,13 @@ import os
 os.environ['LIBCAMERA_LOG_LEVELS'] = '4'          # silence libcamera2
 
 debug = 1                                         # 1 is only graphs, 2 is graphs and jpg
-RunFramesToDo = 5*20                              # for loop frames to run (x/sec), will remove in final version
+RunFramesToDo = 5*3600*24                         # for loop frames to run (x/sec), will remove in final version
 TimeBetweenSamples = .2                           # time in seconds betwen samples, dependent on processor power and imager
 LightPin=12                                       # Monochromatic light power source
 count = 0
 SpecklePosFlatFrame = 'SpecklePosFlatFrame.npy'   # flat fiel file name
 ipn = 5                                           # ROI pipeline depth
-cxs = 128                                         # ROI pixel size (NOTE: use power of 2 for FFT correlator)
+cxs = 64                                          # ROI pixel size (NOTE: use power of 2 for FFT correlator)
 cys = cxs                                         # " (must same as cxs for fft)
 roi   = [np.zeros((cxs,cys), dtype=float)] * ipn  # ROI pipeline
 roib  = np.zeros((cxs,cys), dtype=float)          # ROI background
@@ -84,6 +83,10 @@ ns2sec = 1/1000000000                             # seconds in a nanoseconds
 us2sec = 1/1000000                                # seconds in a microsecond
 us2ns  = 1000                                     # nanoseconds in a microsecond
 sec2us = 1000000                                  # microseconds in a second
+t0     = 0
+t4     = 0
+t5     = 0
+t6     = 0
 
 # precision delay (microseconds)
 def Delay(uS):
@@ -91,49 +94,31 @@ def Delay(uS):
   while (time.perf_counter_ns() < tm):
     pass
 
-# procedure to download ROI from sensor
 def GetROI(Shift2Zero):
   global DarkF
   global roib
   global count
+  global t5
+  global t6
 
   # stack images to improve SNR
-  stack = 3
-# img = cam.capture_array("main").astype(float)         # Colour sensor
-  img = cam.capture_array("main")[:,:,1].astype(float)  # Monochrome sensor (RGB are duplicates)
-  for n in range(1,stack):
-#   img += cam.capture_array("main").astype(float)        # Colour sensor
-    img += cam.capture_array("main")[:,:,1].astype(float)  # Monochrome sensor (RGB are duplicates)
+  stack = 20
+  t5 = time.perf_counter_ns()
+#  img = []
+#  img = cam.capture_array("raw").astype(np.uint16)
+#  for n in range(1, stack):
+#    img.append(cam.capture_array("raw").astype(np.uint16))
+#  sum = np.sum(img, axis=0, dtype=np.uint16)
+#  roi = img[cxo:cxo+cxs, cyo:cyo+cys] / stack - roib
 
-  roi = img[cxo:cxo+cxs,cyo:cyo+cys] / stack - roib  # Monochrome sensor (ROI not supported)
-# roi = img[:,:,1] / stack     # pick green channel when using green laser, take stack average
-
-# r = img[:,:,2].astype(float)
-# g = img[:,:,1].astype(float)
-# b = img[:,:,0].astype(float)
-# roi = (r * (1/.12) + g + b * (1/.28))/1 - roib  # from IMX219 freqency response graph
+  frames = [cam.capture_array("raw")[cyo:cyo+cys, cxo:cxo+cxs] for _ in range(stack)]
+  roi = np.sum(frames, axis=0, dtype=np.uint16) / stack - roib
   if (Shift2Zero): roi = np.clip((roi - DarkF), a_min=0, a_max=255)
+  t6 = time.perf_counter_ns()
 
   timestamp = cam.capture_metadata()["SensorTimestamp"]
 
   return roi, timestamp
-
-#  t0 = time.perf_counter_ns();
-# img10b = (img[:, 0::5] << 2) | (img[:, 1::5] >> 6)
-# roi = img10b[cxo:cxo+cxs,cyo:cyo+cys].astype(float) - roib  #raw
-#  img16 = cam.capture_array("raw").view(np.uint16)
-#  print("raw 12 ",img12.shape)
-#  img16 = img12 * 16
-#  print("raw 16 ",img16.shape)
-#  imgrgb = cv2.cvtColor(img16, cv2.COLOR_BAYER_BG2BGR)
-#  print("rgb    ", imgrgb.shape)
-#  imggry = cv2.cvtColor(imgrgb, cv2.COLOR_RGB2GRAY)
-#  print("gray   ",roi.shape)
-#  timestamp = cam.capture_metadata()["SensorTimestamp"]
-#  return roi.astype(float), timestamp
-#  t1 = time.perf_counter_ns();
-#  print("Image capture + convert (ms)", (t1-t0)/1000000);
-#  return imggry, timestamp
 
 # procedure to detect correlation peak and its centroid
 def Centroid(roi, sel):
@@ -186,7 +171,8 @@ def SetExposure():
   exp = 7
   for n in range (1,50,1):                       # exposure loop
     cam.set_controls({"ExposureTime": int(exp)}) # set camera exposure (microseconds)
-    roi,_ = GetROI(0)                            # snap ROI at set exposure
+    img = cam.capture_array("raw").astype(float)
+    roi = img[cxo:cxo+cxs, cyo:cyo+cys]
     hist = ndimage.histogram(roi, min = 0, max = 255, bins = 256) # histogram pixel brightness in 16 bins over 8 bit
     MxIdx = np.max(np.nonzero(hist>5))           # locate highest non empty bin (threshold to avoid hot pixels and outliers)
     MnIdx = np.min(np.nonzero(hist))             # locate lowest  non empty bin (threshold to avoid hot pixels)
@@ -241,7 +227,7 @@ else:
 print(f"Running {OBS_NAME} (serial {serial}), UDP port:", UDP_PORT)
 
 # Initialize camera
-exp0 = 7         # default exposure in microseconds
+exp0 = 3         # default exposure in microseconds
 exp = exp0       # exposure in microseconds
 cam = Picamera2()
 modes = cam.sensor_modes
@@ -252,18 +238,28 @@ cx,cy = cam.camera_properties['PixelArraySize']
 print("Camera native resolution: ",cx,"x",cy)
 cxo = int((cx-cxs)/2)  # edge of ROI from center of sensor
 cyo = int((cy-cys)/2)  # edge of ROI from center of sensor
-#cam.still_configuration.enable_raw()
-#cam.still_configuration.main.size = (cxs, cys)
-#cam.still_configuration.queue = False;
-#cam.configure(cam.create_still_configuration())
-#camconfig = cam.create_still_configuration(main={'size': (cxs,cys)}, queue=False)   # size same as ROI Colour sensor
-camconfig = cam.create_still_configuration(main={'size': (cx,cy)}, queue=False)   # Mono sensor - ROI not supported
-#camconfig = cam.create_still_configuration(raw={'format': "SRGGB12", 'size': (cxs,cys)}, queue=False,)
-cam.configure(camconfig)
 crop = (cxo, cyo, cxs, cys)
-#cam.set_controls({"AeEnable": False, "ExposureTime": exp0, "AnalogueGain": 1.0, "NoiseReductionMode": False, "ScalerCrop": crop}) # Colour sensor - ROI supported
-cam.set_controls({"AeEnable": False, "ExposureTime": exp0, "AnalogueGain": 1.0, "NoiseReductionMode": False})   # Mono sensor - ROI not supported
+camconfig = cam.create_video_configuration(
+    raw={"format": "R8", "size": (cx, cy)},
+    buffer_count=3,    # tune this for get best download time (t6-t5)
+    controls={
+        "FrameDurationLimits": (8333, 8333),  # 120 FPS
+        "ExposureTime": 20,
+        "AnalogueGain": 1.0,
+        "AeEnable": False,
+        "NoiseReductionMode": 0
+    }
+)
+cam.configure(camconfig)
 cam.start()
+
+# Re-apply controls AFTER start (mandatory for RAW)
+cam.set_controls({
+    "AeEnable": False,
+    "ExposureTime": 20,
+    "AnalogueGain": 1.0,
+    "NoiseReductionMode": 0
+})
 
 # load flat frame data
 try:
@@ -279,7 +275,7 @@ if (roiff.shape != (cxs,cys)):
 
 #initialize socket
 SERVER_IP = '192.168.2.154'
-PORT_NUMBER = 50022
+PORT_NUMBER = UDP_PORT
 SrvSocketActive = 1
 try:
   Socket = socket(AF_INET, SOCK_DGRAM)
@@ -311,14 +307,15 @@ GPIO.setup(LightPin, GPIO.OUT)
 GPIO.output(LightPin, GPIO.HIGH) # light source on
 time.sleep(.25)                  # wait for light source to stabilize
 exp = SetExposure()              # adjust exposure
-#exp = 700
 
 # switch off light source to sample background frame (roib)
 GPIO.output(LightPin, GPIO.LOW)  # light source off
 time.sleep(.25)                  # wait for light source to stabilize
 bn = 25
 for n in range (0, bn+1, 1):
-  roix = np.add(roix, GetROI(0)[0])
+  img = cam.capture_array("raw").astype(float)
+  roi_bg = img[cxo:cxo+cxs, cyo:cyo+cys]
+  roix = np.add(roix, roi_bg)
 roib = roix / bn                # average ROI background
 
 # switch on light source for position sensing
@@ -331,15 +328,19 @@ print('dark threshold: {:3d}'.format(DarkF))
 
 # start image pipeline with 'dark frame' substraction
 for n in range(0, ipn, 1):
-  roi[n],tm[n] = GetROI(1)
-
-# zero time
-t0 = time.perf_counter_ns();
+  img = cam.capture_array("raw").astype(float)
+  roi[n] = img[cxo:cxo+cxs, cyo:cyo+cys]
+  tm[n] = cam.capture_metadata()["SensorTimestamp"]
 
 #################################################################################
 # START OF 'REAL' TIME
+frmTm = 0;
 for n in range(0, RunFramesToDo):
+  t0 = time.perf_counter_ns()
   roi[ipc],tm[ipc] = GetROI(1)  # snap 'current' ROI
+# img = cam.capture_array("raw").astype(float)
+#  roi[ipc] = img[cxo:cxo+cxs, cyo:cyo+cys]
+# tm[ipc] = cam.capture_metadata()["SensorTimestamp"]
 
   # flat frame - do this on ROI before these are flat framed!
   if (RateSrv != 0):   # TODO, logic on HBSrv
@@ -390,7 +391,6 @@ for n in range(0, RunFramesToDo):
   #t1 = time.perf_counter_ns()
   #Vx, Vy = optical_flow_ilk(roi[ipl], roi[ipc], radius=4, gaussian=False, prefilter=False)
   #t2 = time.perf_counter_ns()
-  #oftime = (t2-t1)/1000000
   #dx = np.mean(Vx)
   #dy = np.mean(Vy)
   #Vmag = math.sqrt(dx**2 + dy**2)
@@ -417,7 +417,7 @@ for n in range(0, RunFramesToDo):
   t2 = time.perf_counter_ns()
   oftime = (t2-t1)/1000000
 
-  if (debug): print ('{:5d} - oft:{:6.3f} dt1:{:6.3f} dx1:{:6.3f} dy1:{:6.3f} Vmag:{:6.3f}'.format(count, oftime, dt[1], dx[1], dy[1], Vmag))
+  if (debug): print ('{:5d} - oft:{:7.1f} dt1:{:6.3f} dx1:{:6.3f} dy1:{:6.3f} Vmag:{:6.3f}'.format(count, frmTm, dt[1], dx[1], dy[1], Vmag))
 
   # Handle server/client traffic
   if (SrvSocketActive):
@@ -455,13 +455,16 @@ for n in range(0, RunFramesToDo):
 
   if (debug): count += 1
 
-  # waste time to achieve better determinism (pad to 0.25 sec)
+  t4 = time.perf_counter_ns()  # end of frame time (before time correction)
+  frmTm = (t4-t0)/1000000
+# frmTm = (t6-t5)/1000000
+
+  # waste time to achieve better determinism (pad to TimeBetweenSamples sec)
   TimeCorr = TimeBetweenSamples - (time.perf_counter_ns() - t0) * ns2sec
   if (TimeCorr > 0):
     Delay(TimeCorr * sec2us)
 
 # print('Corr:{:6.3f} it:{:6.3f}'.format(TimeCorr, (time.perf_counter_ns() - t0) * ns2sec))
-  t0 = time.perf_counter_ns()  # end of frame time
 
 GPIO.output(LightPin, GPIO.LOW)   # shutoff light source
 GPIO.cleanup()
