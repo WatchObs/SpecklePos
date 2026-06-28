@@ -1,6 +1,3 @@
-UNDER CONSTRUCTION 2025
-LOTS MORE TO COME - STAY TUNED
-
 Expanded storyline: https://watchobs.com/astronomy12.html
 
 Ultra fine 2 axis position sensing by lensless speckle imaging
@@ -19,6 +16,6 @@ With that in mind, 1 cm target to sensor was chosen with a red laser diode defoc
 In the test carried out on the Ritchey Chretien 16" telescope, a 10" gear was used to sense it movement at 4.75" of radius. The data uploaded to git shows the telescope stopped, then moving to counter the earth's rotation, or some 15.4 arc-sec per second. These are tiny movements for the sensor, yet they were cleary picked up.
 
 ![image](https://github.com/user-attachments/assets/c5438a07-181f-4da7-8e00-7d4fd7031368)
-![image](Sources/Graphs.png)
-![image](Sources/SpecklePosHousing.jpg)
+![image](Images/Graphs.png)
+![image](Images/SpecklePosHousing.jpg)
 
