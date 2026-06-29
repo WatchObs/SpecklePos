@@ -103,19 +103,13 @@ def GetROI(Shift2Zero):
 
   # stack images to improve SNR
   stack = 20
+  frames = []
   t5 = time.perf_counter_ns()
-#  img = []
-#  img = cam.capture_array("raw").astype(np.uint16)
-#  for n in range(1, stack):
-#    img.append(cam.capture_array("raw").astype(np.uint16))
-#  sum = np.sum(img, axis=0, dtype=np.uint16)
-#  roi = img[cxo:cxo+cxs, cyo:cyo+cys] / stack - roib
-
-  frames = [cam.capture_array("raw")[cyo:cyo+cys, cxo:cxo+cxs] for _ in range(stack)]
+  for i in range(stack):
+    frames.append(cam.capture_array("raw")[cyo:cyo+cys, cxo:cxo+cxs])
   roi = np.sum(frames, axis=0, dtype=np.uint16) / stack - roib
-  if (Shift2Zero): roi = np.clip((roi - DarkF), a_min=0, a_max=255)
   t6 = time.perf_counter_ns()
-
+  if (Shift2Zero): roi = np.clip((roi - DarkF), a_min=0, a_max=255)
   timestamp = cam.capture_metadata()["SensorTimestamp"]
 
   return roi, timestamp
@@ -172,7 +166,7 @@ def SetExposure():
   for n in range (1,50,1):                       # exposure loop
     cam.set_controls({"ExposureTime": int(exp)}) # set camera exposure (microseconds)
     img = cam.capture_array("raw").astype(float)
-    roi = img[cxo:cxo+cxs, cyo:cyo+cys]
+    roi = img[cyo:cyo+cys, cxo:cxo+cxs]
     hist = ndimage.histogram(roi, min = 0, max = 255, bins = 256) # histogram pixel brightness in 16 bins over 8 bit
     MxIdx = np.max(np.nonzero(hist>5))           # locate highest non empty bin (threshold to avoid hot pixels and outliers)
     MnIdx = np.min(np.nonzero(hist))             # locate lowest  non empty bin (threshold to avoid hot pixels)
@@ -182,6 +176,8 @@ def SetExposure():
        break
     elif (MxIdx < 220):                          # latch exposure
       exp0 = exp
+      MnIdx0 = MnIdx
+      MxIdx0 = MxIdx
       print('less220: {:.2f} uS index low/high {:3d}/{:3d}'.format(exp, MnIdx, MxIdx))
     else:
       print('220-255: {:.2f} uS index low/high {:3d}/{:3d}'.format(exp, MnIdx, MxIdx))
@@ -189,7 +185,7 @@ def SetExposure():
 
   # snap final image at target exposure and extract histogram for bias
   cam.set_controls({"ExposureTime": int(exp0)})  # set camera exposure
-  print('auto exposure: {:.2f} uS index low/high {:3d}/{:3d}'.format(exp0, MnIdx, MxIdx))
+  print('auto exposure: {:.2f} uS index low/high {:3d}/{:3d}'.format(exp0, MnIdx0, MxIdx0))
   return int(exp0)
 
 # compute bias via histogram
@@ -199,6 +195,132 @@ def GetBias(roi):
   MnIdx = np.min(np.nonzero(hist))             # locate lowest  non empty bin
   bias  = int((MxIdx - MnIdx)/3 + MnIdx)       # lower cutoff (dark) for further imaging - portion of family
   return int(bias)
+
+def AutoExposureAndROI(cam, cx, cy, cxs, cys):
+  """
+  Full-frame exposure + ROI selection.
+  1. Sweep full frame at low exposure.
+  2. Increase exposure until ANY tile saturates.
+  3. Back off to last safe exposure.
+  4. Apply exposure.
+  5. Re-scan tiles and select best ROI.
+  Returns (exp0, best_cxo, best_cyo).
+  """
+
+  # --- Step 1: find exposure that avoids saturation everywhere ---
+  exp = 7
+  exp0 = 7
+  MnIdx0 = 0
+  MxIdx0 = 0
+
+  cam.set_controls({"ExposureTime": int(exp)})
+  for _ in range(3):
+    cam.capture_array("raw")
+    time.sleep(0.01)
+  full = cam.capture_array("raw").astype(np.uint8)
+
+  print("=== AutoExposure sweep ===")
+
+  for n in range(1, 50, 1):
+    cam.set_controls({"ExposureTime": int(exp)})
+    time.sleep(0.05)
+
+    full = cam.capture_array("raw").astype(np.uint8)
+
+    worst_Mx = 0
+    worst_Mn = 255
+
+    # scan all tiles for saturation
+    for yo in range(0, cy - cys + 1, cys):
+      for xo in range(0, cx - cxs + 1, cxs):
+
+        roi = full[yo:yo+cys, xo:xo+cxs]
+        hist = ndimage.histogram(roi, min=0, max=255, bins=256)
+
+        nz_all = np.nonzero(hist)
+        nz_hi  = np.nonzero(hist > 5)
+
+        if len(nz_all[0]) == 0:
+          continue
+
+        MnIdx = int(np.min(nz_all))
+        MxIdx = int(np.max(nz_hi)) if len(nz_hi[0]) else MnIdx
+
+        # track worst-case tile
+        if MxIdx > worst_Mx:
+          worst_Mx = MxIdx
+        if MnIdx < worst_Mn:
+          worst_Mn = MnIdx
+
+    print(f"exp={exp:.2f} uS worst low/high {worst_Mn}/{worst_Mx}")
+
+    # saturation anywhere → break
+    if worst_Mx == 255:
+      print(f"break:   {exp:.2f} uS index low/high {worst_Mn}/{worst_Mx}")
+      break
+
+    # safe exposure → latch
+    if worst_Mx < 220:
+      exp0 = exp
+      MnIdx0 = worst_Mn
+      MxIdx0 = worst_Mx
+      print(f"less220: {exp:.2f} uS index low/high {worst_Mn}/{worst_Mx}")
+    else:
+      print(f"220-255: {exp:.2f} uS index low/high {worst_Mn}/{worst_Mx}")
+
+    exp *= 1.5
+
+  # --- Step 2: apply final exposure ---
+  cam.set_controls({"ExposureTime": int(exp0)})
+  print(f"auto exposure: {exp0:.2f} uS index low/high {MnIdx0}/{MxIdx0}")
+
+  # --- Step 3: re-scan tiles and select best ROI ---
+  full = cam.capture_array("raw").astype(np.uint8)
+
+  best_range = -1
+  best_cxo = 0
+  best_cyo = 0
+
+  print("=== ROI tile histogram scan ===")
+
+  for yo in range(0, cy - cys + 1, cys):
+    for xo in range(0, cx - cxs + 1, cxs):
+
+      roi = full[yo:yo+cys, xo:xo+cxs]
+      hist = ndimage.histogram(roi, min=0, max=255, bins=256)
+
+      nz_all = np.nonzero(hist)
+      nz_hi  = np.nonzero(hist > 5)
+
+      if len(nz_all[0]) == 0:
+        print(f"ROI ({xo},{yo}) empty")
+        continue
+
+      MnIdx = int(np.min(nz_all))
+      MxIdx = int(np.max(nz_hi)) if len(nz_hi[0]) else MnIdx
+
+      total = np.sum(hist)
+      sat_hi = hist[255] / total
+      sat_lo = hist[0] / total
+
+      print(f"ROI ({xo},{yo}) Mn={MnIdx:3d} Mx={MxIdx:3d} sat_lo={sat_lo:.3f} sat_hi={sat_hi:.3f}")
+
+      # reject tiles with ANY saturation (your requirement)
+      if MxIdx == 255:
+        continue
+
+      dyn_range = MxIdx - MnIdx
+
+      if dyn_range > best_range:
+        best_range = dyn_range
+        best_cxo = xo
+        best_cyo = yo
+
+  print("=== End ROI scan ===")
+  print(f"Selected ROI: x={best_cxo}:{best_cxo+cxs}, y={best_cyo}:{best_cyo+cys}")
+
+  return int(exp0), best_cxo, best_cyo
+
 
 def get_serial():
   try:
@@ -243,7 +365,8 @@ camconfig = cam.create_video_configuration(
     raw={"format": "R8", "size": (cx, cy)},
     buffer_count=3,    # tune this for get best download time (t6-t5)
     controls={
-        "FrameDurationLimits": (8333, 8333),  # 120 FPS
+        "FrameDurationLimits": (8333, 8333),  # 120 FPS 1280x800 OV9281
+#       "FrameDurationLimits": (4761, 4761),  # 210 FPS  640x400 OV9281
         "ExposureTime": 20,
         "AnalogueGain": 1.0,
         "AeEnable": False,
@@ -252,6 +375,8 @@ camconfig = cam.create_video_configuration(
 )
 cam.configure(camconfig)
 cam.start()
+#print("Full camera configuration:")
+#print(cam.camera_configuration())
 
 # Re-apply controls AFTER start (mandatory for RAW)
 cam.set_controls({
@@ -307,6 +432,9 @@ GPIO.setup(LightPin, GPIO.OUT)
 GPIO.output(LightPin, GPIO.HIGH) # light source on
 time.sleep(.25)                  # wait for light source to stabilize
 exp = SetExposure()              # adjust exposure
+exp0, cxo, cyo = AutoExposureAndROI(cam, cx, cy, cxs, cys)  # Find best ROI across frame
+
+print(f"ROI bounds: x={cxo}:{cxo+cxs}, y={cyo}:{cyo+cys}")
 
 # switch off light source to sample background frame (roib)
 GPIO.output(LightPin, GPIO.LOW)  # light source off
@@ -314,7 +442,7 @@ time.sleep(.25)                  # wait for light source to stabilize
 bn = 25
 for n in range (0, bn+1, 1):
   img = cam.capture_array("raw").astype(float)
-  roi_bg = img[cxo:cxo+cxs, cyo:cyo+cys]
+  roi_bg = img[cyo:cyo+cys, cxo:cxo+cxs]
   roix = np.add(roix, roi_bg)
 roib = roix / bn                # average ROI background
 
@@ -329,7 +457,7 @@ print('dark threshold: {:3d}'.format(DarkF))
 # start image pipeline with 'dark frame' substraction
 for n in range(0, ipn, 1):
   img = cam.capture_array("raw").astype(float)
-  roi[n] = img[cxo:cxo+cxs, cyo:cyo+cys]
+  roi[n] = img[cyo:cyo+cys, cxo:cxo+cxs]
   tm[n] = cam.capture_metadata()["SensorTimestamp"]
 
 #################################################################################
@@ -339,7 +467,7 @@ for n in range(0, RunFramesToDo):
   t0 = time.perf_counter_ns()
   roi[ipc],tm[ipc] = GetROI(1)  # snap 'current' ROI
 # img = cam.capture_array("raw").astype(float)
-#  roi[ipc] = img[cxo:cxo+cxs, cyo:cyo+cys]
+#  roi[ipc] = img[cyo:cyo+cys, cxo:cxo+cxs]
 # tm[ipc] = cam.capture_metadata()["SensorTimestamp"]
 
   # flat frame - do this on ROI before these are flat framed!
@@ -456,8 +584,8 @@ for n in range(0, RunFramesToDo):
   if (debug): count += 1
 
   t4 = time.perf_counter_ns()  # end of frame time (before time correction)
-  frmTm = (t4-t0)/1000000
-# frmTm = (t6-t5)/1000000
+# frmTm = (t4-t0)/1000000
+  frmTm = (t6-t5)/1000000
 
   # waste time to achieve better determinism (pad to TimeBetweenSamples sec)
   TimeCorr = TimeBetweenSamples - (time.perf_counter_ns() - t0) * ns2sec
