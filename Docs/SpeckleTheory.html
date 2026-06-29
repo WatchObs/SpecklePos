@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Near and Far Field Speckle (Red Laser)</title>
+  <style>
+    body { font-family: system-ui, sans-serif; line-height: 1.6; margin: 2rem; max-width: 900px; }
+    h1, h2 { margin-top: 1.5rem; }
+    code { background: #f4f4f4; padding: 0.15rem 0.3rem; border-radius: 3px; }
+    .eq { font-family: "Times New Roman", serif; font-size: 1.1rem; margin: 0.5rem 0; }
+    .block { padding: 0.75rem 1rem; border-left: 3px solid #ccc; background: #fafafa; margin: 1rem 0; }
+  </style>
+</head>
+<body>
+
+<h1>Speckle Size and Motion in Near and Far Fields (Red Laser)</h1>
+
+<p>
+This document summarizes speckle size and motion in the <strong>near field</strong> and
+<strong>far field</strong>, and includes explicit computation of the near→far transition
+distance for a <strong>red laser</strong>.
+</p>
+
+<hr>
+
+<h2>1. Far-field speckle size</h2>
+
+<p>
+In the far field, the illuminated spot of diameter <code>L</code> acts as a coherent aperture.
+The mean speckle grain size at sensor distance <code>z</code> is:
+</p>
+
+<div class="eq">
+  d<sub>far</sub> ≈ ( λ · z ) / L
+</div>
+
+<ul>
+  <li><strong>λ</strong> = wavelength (m)</li>
+  <li><strong>z</strong> = distance from scattering surface to sensor (m)</li>
+  <li><strong>L</strong> = illuminated spot diameter (m)</li>
+</ul>
+
+<hr>
+
+<h2>2. Near-field speckle size</h2>
+
+<p>
+In the near field, speckle statistics are governed by local phase curvature. The mean
+speckle size scales as:
+</p>
+
+<div class="eq">
+  d<sub>near</sub> ≈ √( λ · z )
+</div>
+
+<ul>
+  <li><strong>λ</strong> = wavelength (m)</li>
+  <li><strong>z</strong> = distance from scattering surface to sensor (m)</li>
+</ul>
+
+<hr>
+
+<h2>3. Near → Far Field Transition</h2>
+
+<p>
+The boundary between near-field and far-field speckle is given by:
+</p>
+
+<div class="eq">
+  z<sub>transition</sub> = L² / λ
+</div>
+
+<p>
+with:
+</p>
+<ul>
+  <li><strong>L² / λ</strong> = characteristic distance where the illuminated spot behaves like a diffraction aperture.</li>
+</ul>
+
+<div class="block">
+  <strong>Near field:</strong> z ≪ L² / λ<br>
+  <strong>Far field:</strong> z ≫ L² / λ
+</div>
+
+<hr>
+
+<h2>4. Red Laser Example (λ ≈ 650 nm)</h2>
+
+<p>
+For a typical red laser:
+</p>
+
+<ul>
+  <li>λ = 650 nm = 6.5 × 10⁻⁷ m</li>
+</ul>
+
+<p>
+Let the illuminated spot diameter be:
+</p>
+
+<ul>
+  <li>L = 5 mm = 5 × 10⁻³ m</li>
+</ul>
+
+<p>
+Compute the near→far transition distance:
+</p>
+
+<div class="eq">
+  z<sub>transition</sub> = L² / λ
+</div>
+
+<div class="eq">
+  = (5 × 10⁻³ m)² / (6.5 × 10⁻⁷ m)
+</div>
+
+<div class="eq">
+  = 25 × 10⁻⁶ / 6.5 × 10⁻⁷ ≈ 38 m
+</div>
+
+<div class="block">
+  <strong>Conclusion:</strong> For a 5 mm red spot, any sensor distance much less than
+  ~38 m is near-field. Telescope optical paths (≈0.5–2 m) are therefore firmly in the
+  near-field regime.
+</div>
+
+<hr>
+
+<h2>5. Speckle Motion Scaling</h2>
+
+<p>
+Speckle motion sensitivity scales roughly as:
+</p>
+
+<div class="eq">
+  Δx<sub>speckle</sub> ∝ z / d<sub>speckle</sub>
+</div>
+
+<p>
+Near field (using d<sub>near</sub> ≈ √(λz)):
+</p>
+
+<div class="eq">
+  Δx<sub>near</sub> ∝ √( z / λ )
+</div>
+
+<p>
+Far field (using d<sub>far</sub> ≈ λz/L):
+</p>
+
+<div class="eq">
+  Δx<sub>far</sub> ∝ L / λ
+</div>
+
+<div class="block">
+  <strong>Near field:</strong> motion grows with √z and is very sensitive to distance.<br>
+  <strong>Far field:</strong> motion is controlled mainly by aperture size L and wavelength λ.
+</div>
+
+</body>
+</html>
