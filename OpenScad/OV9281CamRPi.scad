@@ -17,9 +17,9 @@ $fn=180;
 // THINGIVERSE customizer does not understand true/flase, so use 1/0 instead
 
 /* [parts] */
-make_bottom=0;   // [0:No,1:Yes] 
+make_bottom=1;   // [0:No,1:Yes] 
 make_top=1;      // [0:No,1:Yes] 
-make_spacer=0;   // [0:No,1:Yes]
+make_spacer=1;   // [0:No,1:Yes]
 Pi0 = 0;         // Rpi Zero housing
 Pi4 = !Pi0;      // RPi 4 housing
 
@@ -543,6 +543,7 @@ difference()
 }
 }
 
+spacerWidth = 35;
 module MountingTab()
 {
 // Mounting slots
@@ -550,7 +551,12 @@ translate([0,-25,.9])
 {
   difference()
   {
-   cube([71,17,4], center=true);
+   union()
+   {
+    thk = 8;
+    translate([0,0,2-thk/2]) cube([71,17,thk], center=true);
+    translate([0,10,1-thk/2]) cube([71,spacerWidth,thk-2], center=true);
+   }
    shift = -17;
    off = 34;
    wid = 10;
@@ -561,8 +567,8 @@ translate([0,-25,.9])
     x = shift + off * i;
     hull() 
     {
-     translate([x + wid, 0, 0 ]) cylinder(h=10, d=5.5, center=true);
-     translate([x - wid, 0, 0 ]) cylinder(h=10, d=5.5, center=true);
+     translate([x + wid, 0, 0 ]) cylinder(h=20, d=5.5, center=true);
+     translate([x - wid, 0, 0 ]) cylinder(h=20, d=5.5, center=true);
     }
    }
   }
@@ -571,19 +577,14 @@ translate([0,-25,.9])
 
 module spacer()
 {
- //wd  = 35;
- //lng = 95;
- //ht  = 50 + 25;
- //off = 34; // see camera bracket
-
- wd  = 35;
+ wd  = spacerWidth;
  lng = 80;
- ht  = 50 + 25;
+ ht  = 75 + 10;  // 75 on WatchObs RC16 gives 10mm camera to gear surface
  off = 34; // see camera bracket
  
 
  thread = 4.5;
- translate([55,-43,-ht-10])
+ translate([55,-32,-ht-10])
  rotate([0,0,90])
  difference()
  {
@@ -591,7 +592,7 @@ module spacer()
   cube([wd,lng,ht]);
 
   // Bolt into structure
-  translate([wd/2,15,ht/2+20]) cylinder(h=70,d=15, center=true);
+  translate([wd/2,15,ht/2+20]) cylinder(h=ht-5,d=15, center=true);
   translate([wd/2,15,ht/2])    cylinder(h=90,d=8.5,center=true);
   // Threaded holes for camera retention
   translate([wd/2-10,lng-10,ht/2])      cylinder(h=90, d=thread, center=true);
